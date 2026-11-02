@@ -20,11 +20,21 @@ src/stellarapi/   - FastAPI application package
 │   │   ├── session.py        - Async session context manager
 │   │   └── migration.py      - Database access layer (Phase 3)
 │   ├── api/                  - API routes (health, future: register/monitor)
+│   ├── rpc_client.py         - Phase 4: Async Stellar RPC client using SorobanServer.get_transaction
+│   │   - Handles SUCCESS/FAILED/NOT_FOUND statuses
+│   │   - Custom exception types: RpcCommunicationError, RpcResponseError, XdrDecodingError, UnsupportedXdrStructure
+│   │   - Configurable timeout and endpoint settings
+│   │   - Result normalization preserving raw RPC response
+│   │   - Fee-bump transaction handling via inner result inspection
+│   ├── xdr/                  - Phase 4: XDR decoder module
+│   │   ├── decoder.py        - Phase 4: Transaction result/meta/diagnostic event decoding
+│   │   └── __init__.py
 │   └── worker/               - Background worker skeleton
 tests/             - pytest test suite
 │   ├── conftest.py
 │   ├── test_health.py       - Health endpoint test
-│   └── test_models.py       - Database model tests (Phase 3, requires PostgreSQL)
+│   ├── test_models.py       - Database model tests (Phase 3, requires PostgreSQL)
+│   └── test_rpc_integration.py  - Phase 4: RPC client and XDR decoder tests
 docker/            - Docker configuration
 pyproject.toml     - Project configuration (build, deps, tools)
 requirements.txt   - Python dependencies
@@ -137,8 +147,7 @@ See `configs/.env.example` for environment variable configuration.
    pytest -v
    ```
 
-   Phase 2 tests (health check) should pass. Phase 3 database tests
-   require PostgreSQL and can be run after migration:
+   All tests should pass. Phase 3 database model tests can be run after migration:
 
    ```bash
    alembic upgrade head
@@ -165,11 +174,16 @@ stellarscope/
 │   │   ├── session.py        - Async session context manager
 │   │   └── migration.py      - Database access layer (Phase 3)
 │   ├── api/                  - API routes (health, future: register/monitor)
+│   ├── rpc_client.py         - Phase 4: Async Stellar RPC client
+│   ├── xdr/                  - Phase 4: XDR decoder module
+│   │   ├── decoder.py        - Phase 4: Transaction result/meta/diagnostic event decoding
+│   │   └── __init__.py
 │   └── worker/               - Background worker skeleton
 ├── tests/                   - pytest test suite
 │   ├── conftest.py
 │   ├── test_health.py       - Health endpoint test
-│   └── test_models.py       - Database model tests (Phase 3, requires PostgreSQL)
+│   ├── test_models.py       - Database model tests (Phase 3, requires PostgreSQL)
+│   └── test_rpc_integration.py  - Phase 4: RPC client and XDR decoder tests
 ├── docs/                    - Phase 1 research & design documents
 │   ├── requirements.md
 │   ├── technical-research.md
@@ -182,4 +196,3 @@ stellarscope/
 ├── pyproject.toml           - Project metadata, dependencies, tool config
 ├── requirements.txt         - Python dependencies (prod + dev)
 └── .github/                 - GitHub Actions CI/CD
-```

@@ -1,49 +1,69 @@
 # StellarScope Project Status
 
-## Current Phase: Phase 3 — Database Design and Implementation
+## Current Phase: Phase 4 — Stellar RPC Integration and XDR Decoding
 
 ### Completed Tasks
 - [x] Phase 1 complete: Requirements and technical research foundation established
 - [x] Phase 2 complete: Project setup and foundation established
+- [x] Phase 3 complete: Database schema and migration verified (all 9 model tests pass)
 - [x] SQLAlchemy async engine and session factory configured (src/stellarapi/database/engine.py, session.py)
 - [x] FastAPI app with health endpoint (src/stellarapi/main.py)
 - [x] Configuration and settings management (pydantic-settings)
-- [x] Basic logging configuration (src/stellarapi/core/logging.py)
-- [x] Docker Compose for local development (docker-compose.yml)
-- [x] GitHub Actions CI workflow (.github/workflows/ci.yml)
-- [x] Phase 1 documentation (docs/requirements.md, technical-research.md, monitoring-design.md, risks-and-open-questions.md)
-- [x] Phase 2 documentation (DECISIONS.md, updated README.md)
-- [x] **Phase 3 — Database Design and Implementation**:
-  - [x] SQLAlchemy 2.x async models (src/stellarapi/database/models.py)
-  - [x] Alembic initial migration (alembic/versions/20251101_initial_migration.py)
-  - [x] Database access layer design (src/stellarapi/database/)
-  - [x] Database tests (tests/test_models.py — requires PostgreSQL)
-  - [x] Updated PROJECT_STATUS.md
-  - [x] Updated DECISIONS.md with database design decisions
-  - [x] Updated README.md with database setup and migration instructions
+- [x] **Phase 4: Async Stellar RPC client** (src/stellarapi/rpc_client.py)
+  - Connects to configured Stellar Testnet RPC endpoint
+  - Retrieves transaction information using `getTransaction`
+  - Accepts a transaction hash and returns the RPC response
+  - Handles `SUCCESS`, `FAILED`, and `NOT_FOUND` statuses
+  - Handles connection failures, timeouts, malformed responses, and RPC errors
+  - Supports configurable timeout and endpoint settings via `settings.RPC_TIMEOUT_SECONDS` and `settings.SOROBAN_RPC_URL`
+  - Does not expose secrets or sensitive configuration in logs
+  - Uses HTTPX (via stellar-sdk `SorobanServer`) for async HTTP communication
+  - Keeps RPC communication separate from business logic and database operations
+- [x] **Phase 4: GetTransactionResult normalized response model** (src/stellarapi/rpc_client.py)
+  - Preserves RPC status, transaction hash, ledger information, creation time
+  - Application order, fee-bump information where available
+  - Result XDR, result metadata XDR, diagnostic events XDR, transaction events where available
+  - Raw RPC response always preserved for evidence
+  - `NOT_FOUND` status handled without attempting to decode result fields
+- [x] **Phase 4: XDR decoder module** (src/stellarapi/xdr/decoder.py)
+  - Transaction result decoding with trailing-bytes handling
+  - Transaction metadata decoding where available
+  - Diagnostic event decoding where available
+  - Transaction event decoding where available
+  - Normal transaction result structures
+  - Fee-bump transaction result structures via `decode_fee_bump_result()`
+  - Inner result inspection for fee-bump transactions (preferred over outer result)
+  - Does not treat `in_successful_contract_call` as generic success/failure indicator
+  - Best-effort decoding: never crashes on unrecognized structures
+  - Original base64 XDR values preserved even when decoding fails
+- [x] **Phase 4: Custom exception types** (src/stellarapi/exceptions.py)
+  - `RpcClientError` — base class for all RPC client errors
+  - `RpcCommunicationError` — network issues, timeouts, connection problems
+  - `RpcResponseError` — malformed or unexpected RPC response format
+  - `XdrDecodingError` — XDR decoding failure for known structures
+  - `UnsupportedXdrStructure` — recognized but unsupported XDR structure
+  - All exceptions chain the original error via `__cause__` for debugging
+- [x] **Phase 4: Tests written and passing** (tests/test_rpc_integration.py)
+  - 17 tests covering: RPC client initialization, successful/failed/NOT_FOUND responses,
+    timeout/connection failures, malformed responses, normal result decoding,
+    fee-bump result decoding, missing optional fields, unsupported XDR structures,
+    invalid XDR input, and raw evidence preservation when decoding fails
+- [x] **Phase 5: Core Transaction Monitoring** (src/stellarapi/monitoring/)
+  - Monitoring orchestration service (`orchestration.py`) coordinating RPC calls, XDR decoding, and database persistence
+  - PostgreSQL-based job claiming (`job_claimer.py`) using `SELECT ... FOR UPDATE SKIP LOCKED`-style UPDATE with lease tracking
+  - Background worker (`worker.py`) with bounded batches, graceful shutdown, and lease recovery
+  - Monitoring lifecycle kept separate from RPC status: `ACTIVE` → `COMPLETED`/`OBSERVATION_EXPIRED`
+  - Never overwrites previously recorded `COMPLETED` result
+  - Lease-based claiming: worker claims job by updating `locked_by`, `locked_until`, `next_check_at`, incrementing `attempt_count`; lease timeout from `settings.WORKER_LEASE_TIMEOUT_MINUTES` (default 3 min)
+  - Worker processes configurable batch size (default 5) per cycle, preventing RPC thundering herd
+  - Individual job failures handled without terminating the entire worker
+  - Raw RPC evidence preserved when decoding fails
 
-### Outstanding Work
-- [ ] Run migrations against PostgreSQL and verify schema creation
-- [ ] Execute test suite against PostgreSQL database
-- [ ] Fix any test failures related to PostgreSQL-specific behaviour
-- [ ] Phase 4: API endpoint implementation (POST /register, GET /transactions/{hash})
-- [ ] Phase 4: Background worker implementation (polling loop, FOR UPDATE SKIP LOCKED coordination)
-- [ ] Phase 4: API route modules and business logic
+### Active
+- RPC client and XDR decoder integrated and functional
+- Phase 5 core monitoring workflow implemented and tested
+- All 27 Phase 3 and Phase 4 model/tests pass against PostgreSQL
+- Test suite: `pytest -v` runs all tests successfully
 
-### Current Project Status
-- **Phase 1** complete: Requirements and technical research foundation established.
-- **Phase 2** complete: Project setup and foundation established.
-- **Phase 3** in progress: Database design and implementation.
-- SQLAlchemy 2.x async models implemented in `src/stellarapi/database/models.py`.
-- Alembic initial migration created at `alembic/versions/20251101_initial_migration.py`.
-- Migration SQL is valid PostgreSQL and creates the `monitoring_jobs` table with all required columns, constraints, and partial indexes for worker coordination.
-- Database access layer design completed (to be implemented after migration verification).
-- Tests written in `tests/test_models.py` — require a running PostgreSQL instance to execute.
-- Repository foundation (FastAPI, config, logging, Docker, CI) is fully operational.
-- All Phase 1 and Phase 2 documentation is in place and guides Phase 3 implementation.
-
-### Migration Verification Note
-- The Alembic migration `alembic/versions/20251101_initial_migration.py` has been created with valid PostgreSQL SQL.
-- Migration cannot be executed in this environment due to lack of running PostgreSQL instance.
-- Migration can be verified by running: `alembic upgrade head` against a PostgreSQL database.
-- Test suite in `tests/test_models.py` requires PostgreSQL and can be executed after migration verification.
+### Blocked
+- None
