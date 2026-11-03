@@ -20,7 +20,9 @@ services:
       retries: 5
 
   app:
-    build: .
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     container_name: stellarscope-app
     restart: unless-stopped
     depends_on:
@@ -34,9 +36,27 @@ services:
       WORKER_LEASE_TIMEOUT_MINUTES: 3
       OBSERVATION_DEADLINE_MINUTES: 60
       ENV: development
+      CORS_ORIGINS: "http://localhost:5173 http://localhost:3000"
     ports:
       - "8000:8000"
-    command: uvicorn src.stellarapi.main:app --host 0.0.0.0 --port 8000
+    command: uvicorn stellarapi.main:app --host 0.0.0.0 --port 8000
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: stellarscope-frontend
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      VITE_API_URL: "http://localhost:8000/api"
+      CORS_ORIGINS: "http://localhost:8000"
+    ports:
+      - "5173:5173"
+    volumes:
+      - /home/omotemmy/Documents/git-repositories/stellarscope/frontend/dist:/app/dist  # prod build mount
 
 volumes:
   postgres_data:

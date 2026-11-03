@@ -13,7 +13,7 @@ import pytest
 import sqlalchemy
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from src.stellarapi.database.models import Base, MonitoringJob
+from stellarapi.database.models import Base, MonitoringJob
 
 
 # Test database URL - use Docker Compose PostgreSQL or fall back to localhost

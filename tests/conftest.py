@@ -5,7 +5,7 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-from src.stellarapi.database.models import Base
+from stellarapi.database.models import Base
 
 # Use Docker Compose PostgreSQL or fallback to localhost
 TEST_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/stellarscope"

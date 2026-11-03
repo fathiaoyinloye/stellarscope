@@ -5,7 +5,7 @@ structure.  No database or Stellar RPC dependencies.
 """
 import pytest
 
-from src.stellarapi.main import app
+from stellarapi.main import app
 
 
 @pytest.mark.asyncio
