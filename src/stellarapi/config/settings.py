@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     # Soroban RPC URL
     SOROBAN_RPC_URL: str = "https://soroban-testnet.stellar.org"
 
+    # Mainnet RPC URL (optional, defaults to testnet)
+    MAINNET_RPC_URL: str = "https://horizon.multi pool.stellar.org"
+
 
 # Singleton instance; created at module import time so other packages can
 # `from src.stellarapi.config.settings import settings` without circular risks.

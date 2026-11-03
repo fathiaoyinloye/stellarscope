@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StellarScope - Dashboard</title>
+    <style>
+        :root {
+            --primary: #0066cc;
+            --primary-dark: #0052a4;
+            --bg: #f5f7f9;
+            --card: #ffffff;
+            --text: #1e293b;
+            --muted: #64748b;
+            --success: #10b981;
+            --failed: #ef4444;
+            --warning: #f59e0b;
+            --info: #3b82f6;
+        }
+        
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        
+        h1, h2, h3 { color: var(--primary); margin-bottom: 1rem; }
+        
+        .header { 
+            background: var(--card); 
+            padding: 20px; 
+            border-radius: 8px; 
+            margin-bottom: 2rem; 
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 { margin: 0; font-size: 1.5rem; }
+        
+        .nav { display: flex; gap: 1rem; margin-top: 1rem; }
+        .nav a { 
+            background: var(--primary); 
+            color: white; 
+            padding: 8px 16px; 
+            border-radius: 6px; 
+            text-decoration: none; 
+            font-size: 0.9rem;
+        }
+        .nav a:hover { background: var(--primary-dark); }
+        
+        .section { 
+            background: var(--card); 
+            padding: 20px; 
+            margin-bottom: 2rem; 
+            border-radius: 8px; 
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .section h2 { margin-top: 0; color: var(--primary); }
+        
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; }
+        
+        .card { 
+            background: var(--card); 
+            padding: 1.5rem; 
+            border-radius: 8px; 
+            border: 1px solid #e2e8f0;
+        }
+        
+        .card h3 { margin-top: 0; color: var(--muted); font-size: 0.85rem; }
+        
+        .status-ok { color: var(--success); }
+        .status-failed { color: var(--failed); }
+        .status-pending { color: var(--warning); }
+        
+        table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+        th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th { color: var(--muted); font-size: 0.75rem; }
+        tr:hover { background: #f1f5f9; }
+        
+        .filter-row { margin-bottom: 1rem; display: flex; gap: 1rem; align-items: center; }
+        .filter-row select, .filter-row input { padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.9rem; }
+        .filter-row button { 
+            padding: 6px 12px; background: var(--primary); color: white; border: none; border-radius: 6px; cursor: pointer;
+        }
+        .filter-row button:hover { background: var(--primary-dark); }
+        
+        .empty { color: var(--muted); padding: 2rem; text-align: center; }
+        
+        .btn { 
+            background: var(--primary); color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem;
+        }
+        .btn:hover { background: var(--primary-dark); }
+        .btn-secondary { background: #64748b; }
+        
+        .network-testnet { color: var(--success); }
+        .network-mainnet { color: var(--failed); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>StellarScope Dashboard</h1>
+            <div class="nav">
+                <a href="#transactions">Transactions</a>
+                <a href="#contracts">Contracts</a>
+                <a href="#alerts">Alerts</a>
+                <a href="#health">RPC Health</a>
+            </div>
+        </div>
+        
+        <div id="content" class="section"></div>
+    </div>
+
+    <script>
+        const API_BASE = '/api/v1';
+        const network = 'testnet'; // will be updated by selector
+        
+        async function fetchAPI(path, init = {}) {
+            const resp = await fetch(`${API_BASE}${path}`, init);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            return resp.json();
+        }
+        
+        async function loadNav() {
+            const content = document.getElementById('content');
+            const routes = {
+                'transactions': async () => {
+                    try {
+                        const txs = await fetchAPI('/api/v1/transactions');
+                        content.innerHTML = `
+                            <h2>Monitored Transactions</h2>
+                            <div class="filter-row">
+                                <select id="networkFilter">
+                                    <option value="testnet">Testnet</option>
+                                    <option value="mainnet">Mainnet</option>
+                                </select>
+                                <input type="text" id="searchInput" placeholder="Search hash...">
+                                <button class="btn" onclick="refreshTransactions()">Refresh</button>
+                            </div>
+                            <table id="txTable">
+                                <thead>
+                                    <tr>
+                                        <th>Hash</th>
+                                        <th>Network</th>
+                                        <th>Status</th>
+                                        <th>Monitoring Status</th>
+                                        <th>Ledger</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                            <div class="empty" id="txEmpty">No transactions found</div>
+                        `;
+                        renderTransactions();
+                    } catch (e) {
+                        content.innerHTML = `<p class="error">Error loading transactions: ${e.message}</p>`;
+                    }
+                },
+                'contracts': async () => {
+                    try {
+                        const cdata = await fetchAPI('/api/v1/contracts/discovery/testnet');
+                        content.innerHTML = `
+                            <h2>Contract Discovery (Testnet)</h2>
+                            <div class="filter-row">
+                                <button class="btn" onclick="refreshContracts()">Refresh</button>
+                            </div>
+                            <div id="contractsEmpty" class="empty">No contracts found</div>
+                            <div id="contractsTable"></div>
+                        `;
+                        renderContracts();
+                    } catch (e) {
+                        content.innerHTML = `<p class="error">Error loading contracts: ${e.message}</p>`;
+                    }
+                },
+                'alerts': async () => {
+                    try {
+                        const alerts = await fetchAPI('/api/v1/alerts'); // hypothetical, using monitoring data approach
+                        // For now, show from transactions status changes
+                        content.innerHTML = `
+                            <h2>Alerts</h2>
+                            <div class="empty" id="alertsEmpty">No alerts data available via current API</div>
+                        `;
+                    } catch (e) {
+                        content.innerHTML = `<p class="error">Error loading alerts: ${e.message}</p>`;
+                    }
+                },
+                'health': async () => {
+                    try {
+                        const health = await fetchAPI('/api/v1/rpc/health');
+                        content.innerHTML = `
+                            <h2>RPC Health Status</h2>
+                            <div class="card">
+                                <p><strong>Status:</strong> <span id="healthStatus" class="${health.status === 'healthy' ? 'status-ok' : 'status-failed'}">${health.status}</span></p>
+                                <p><strong>Latest Ledger:</strong> ${health.latest_ledger}</p>
+                                <p><strong>Oldest Ledger:</strong> ${health.oldest_ledger}</p>
+                                <p><strong>Retention Window:</strong> ${health.ledger_retention_window}s (${Math.round(health.ledger_retention_window / 86400)} days)</p>
+                            </div>
+                        `;
+                    } catch (e) {
+                        content.innerHTML = `<p class="error">Error loading health: ${e.message}</p>`;
+                    }
+                }
+            };
+            
+            function renderTransactions() {
+                const table = document.getElementById('txTable');
+                const tbody = table.querySelector('tbody');
+                const empty = document.getElementById('txEmpty');
+                
+                // Filter by network
+                const networkFilter = document.getElementById('networkFilter').value;
+                const searchInput = document.getElementById('searchInput').value.toLowerCase();
+                
+                // Fetch fresh data
+                fetch(`${API_BASE}/api/v1/transactions`)
+                    .then(resp => resp.json())
+                    .then(txs => {
+                        tbody.innerHTML = '';
+                        const filtered = txs.filter(t => 
+                            t.network === networkFilter && 
+                            t.transaction_hash.toLowerCase().includes(searchInput)
+                        );
+                        
+                        if (filtered.length === 0) {
+                            empty.style.display = 'block';
+                            tbody.innerHTML = '';
+                            return;
+                        }
+                        
+                        empty.style.display = 'none';
+                        filtered.forEach(t => {
+                            const statusClass = t.monitoring_status === 'COMPLETED' ? 'status-ok' : 
+                                              t.monitoring_status === 'OBSERVATION_EXPIRED' ? 'status-pending' : 'status-failed';
+                            const row = document.createElement('tr');
+                            row.innerHTML = `
+                                <td>${t.transaction_hash}</td>
+                                <td>${t.network}</td>
+                                <td><span class="${statusClass}">${t.monitoring_status}</span></p></td>
+                                <td>${t.ledger || '—'}</p></td>
+                                <td>
+                                    <a href="/api/v1/transactions/${t.transaction_hash}" target="_blank">Details</a>
+                                </td>
+                            `;
+                            tbody.appendChild(row);
+                        });
+                    });
+            }
+            
+            function refreshTransactions() {
+                renderTransactions();
+            }
+            
+            function renderContracts() {
+                const table = document.getElementById('contractsTable');
+                const empty = document.getElementById('contractsEmpty');
+                
+                fetch(`${API_BASE}/api/v1/contracts/discovery/testnet`)
+                    .then(resp => resp.json())
+                    .then(contracts => {
+                        table.innerHTML = '';
+                        if (contracts.length === 0) {
+                            empty.style.display = 'block';
+                            return;
+                        }
+                        empty.style.display = 'none';
+                        contracts.forEach(c => {
+                            const row = document.createElement('div');
+                            row.innerHTML = `
+                                <div style="margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #e2e8f0;">
+                                    <strong>Address:</strong> ${c.contract_address}
+                                    <div style="font-size: 0.85rem; color: var(--muted);">
+                                        Status: ${c.status} | Discovered: ${c.discovered_count}
+                                    </div>
+                                    <div style="margin-top: 0.5rem;">
+                                        <button class="btn btn-sm" onclick="window.location='/api/v1/contracts/discovery/${c.contract_address}'">View Details</button>
+                                    </div>
+                                </div>
+                            `;
+                            table.appendChild(row);
+                        });
+                    });
+            }
+            
+            // Initial load
+            renderTransactions();
+            renderContracts();
+        }
+        
+        // Initialize on load
+        document.addEventListener('DOMContentLoaded', loadNav);
+    </script>
+</body>
+</html>
