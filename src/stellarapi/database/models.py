@@ -12,6 +12,7 @@ aware timestamps) and the model uses SQLAlchemy 2.x ``async`` features
 ``async_engine_from_config``, ``async_sessionmaker``) that are already
 configured elsewhere in the package.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -25,10 +26,8 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    Time,
     TIMESTAMP,
     event,
-    inspect,
 )
 from sqlalchemy.dialects.postgresql import (
     UUID as PostgreSQLUUID,
@@ -119,14 +118,14 @@ class MonitoringJob(AsyncAttrs, Base):
         String(16),
         nullable=False,
         default="pending",
-        comment="Latest Stellar RPC getTransaction status: SUCCESS | FAILED | NOT_FOUND",
+        comment="Latest Stellar RPC getTransaction status: SUCCESS | FAILED | NOT_FOUND | pending",
     )
 
     # --------------------------------------------------------------------- #
     # Monitoring lifecycle
     # --------------------------------------------------------------------- #
     monitoring_status = Column(
-        String(16),
+        String(32),
         nullable=False,
         default="ACTIVE",
         comment="StellarScope monitoring state: ACTIVE | COMPLETED | OBSERVATION_EXPIRED",
@@ -138,6 +137,7 @@ class MonitoringJob(AsyncAttrs, Base):
     raw_rpc_response = Column(
         JSONB,
         nullable=False,
+        server_default=sa.text("'{}'::jsonb"),
         comment="Full preserved JSON‑RPC getTransaction response; all fields kept "
         "for audit and debugging.  Prefer querying this column over adding "
         "individual columns that may become stale.",
@@ -218,6 +218,7 @@ class MonitoringJob(AsyncAttrs, Base):
     next_check_at = Column(
         PG_TIMESTAMP(timezone=True),
         nullable=False,
+        server_default=sa.text("now()"),
         comment="Earliest timestamp at which a worker should next poll "
         "getTransaction for this hash.  The background worker must not poll "
         "before this time.",
@@ -244,8 +245,8 @@ class MonitoringJob(AsyncAttrs, Base):
     updated_at = Column(
         PG_TIMESTAMP(timezone=True),
         nullable=False,
-        server_default="now()",
-        onupdate="now()",
+        server_default=sa.text("now()"),
+        onupdate=sa.func.now(),
         comment="Row last‑update time (timezone‑aware).",
     )
 
@@ -259,8 +260,10 @@ class MonitoringJob(AsyncAttrs, Base):
             name="ck_monitoring_status_valid",
         ),
         # Ensure rpc_status is always one of the allowed values.
+        # "pending" is included as a transitional state before the first RPC call;
+        # the worker subsequently updates it to SUCCESS/FAILED/NOT_FOUND.
         CheckConstraint(
-            "rpc_status IN ('SUCCESS', 'FAILED', 'NOT_FOUND')",
+            "rpc_status IN ('SUCCESS', 'FAILED', 'NOT_FOUND', 'pending')",
             name="ck_rpc_status_valid",
         ),
         # Unique constraint on transaction hash
@@ -289,3 +292,156 @@ class MonitoringJob(AsyncAttrs, Base):
     def is_observation_expired(self) -> bool:
         """Return True when the observation deadline has been reached."""
         return self.monitoring_status == "OBSERVATION_EXPIRED"
+# ---------------------------------------------------------------------------
+# contracts_discovery table model (Phase 9)
+# ---------------------------------------------------------------------------
+
+class ContractDiscovery(AsyncAttrs, Base):
+    """Database model for a Soroban contract discovery job.
+
+    This table tracks the discovery of transactions associated with a Soroban
+    contract.  It uses the stellar_sdk's get_events() method with
+    EventFilter(contract_ids=[...]) to find emitted events, extracts the
+    transaction hashes, and registers them into the existing monitoring workflow.
+
+    The discovery lifecycle states are::
+
+        PENDING   - Contract registered, not yet started discovery
+        IN_PROGRESS - Worker is currently fetching events
+        COMPLETED - Discovery finished; all available events processed
+        ERROR     - Discovery failed after consecutive errors
+
+    Each discovered transaction hash is registered into the existing
+    ``monitoring_jobs`` table via the standard API endpoint, so discovered
+    transactions share the same monitoring lifecycle (ACTIVE -> COMPLETED
+    / OBSERVATION_EXPIRED).
+
+    ``contract_address`` / ``network`` are unique together — there is one
+    discovery job per contract per network.
+    """
+
+    __tablename__ = "contracts_discovery"
+
+    id = Column(
+        PostgreSQLUUID(as_uuid=False),
+        primary_key=True,
+        default=uuid.uuid4,
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+
+    contract_address = Column(
+        CHAR(64),
+        nullable=False,
+        index=True,
+        comment="64-char hex-encoded Soroban contract address",
+    )
+
+    network = Column(
+        String(16),
+        nullable=False,
+        default="testnet",
+        comment="Stellar network identifier (testnet | mainnet)",
+    )
+
+    status = Column(
+        String(32),
+        nullable=False,
+        server_default="PENDING",
+        comment="Discovery lifecycle status: PENDING | IN_PROGRESS | COMPLETED | ERROR",
+    )
+
+    cursor = Column(
+        Text,
+        nullable=True,
+        comment="Pagination cursor from last get_events() call; used to "
+        "resume discovery after interruption or worker restart",
+    )
+
+    last_ledger = Column(
+        Integer,
+        nullable=True,
+        comment="Last ledger number processed during discovery",
+    )
+
+    last_successful_ledger = Column(
+        Integer,
+        nullable=False,
+        server_default=sa.text("0"),
+        comment="Last ledger where transactions were safely discovered and "
+        "registered into monitoring_jobs; used to avoid re-processing "
+        "already-discovered ledgers",
+    )
+
+    error_message = Column(
+        Text,
+        nullable=True,
+        comment="Last error message encountered during discovery; cleared "
+        "when status transitions to PENDING or COMPLETED",
+    )
+
+    error_count = Column(
+        Integer,
+        nullable=False,
+        server_default=sa.text("0"),
+        comment="Consecutive error count; if error_count exceeds "
+        "CONSECUTIVE_ERRORS_TO_STOP (configurable), status is set to ERROR",
+    )
+
+    discovered_count = Column(
+        Integer,
+        nullable=False,
+        server_default=sa.text("0"),
+        comment="Total number of transaction hashes discovered and "
+        "successfully registered into monitoring_jobs",
+    )
+
+    created_at = Column(
+        PG_TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default="now()",
+        comment="Row creation time (timezone-aware).",
+    )
+
+    updated_at = Column(
+        PG_TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=sa.text("now()"),
+        onupdate=sa.func.now(),
+        comment="Row last-update time (timezone-aware).",
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "contract_address", "network", name="uq_contracts_discovery_address_network"
+        ),
+    )
+
+    # ----------------------------------------------------------------- #
+    # Helper properties (read-only, no side-effects)
+    # ----------------------------------------------------------------- #
+    @property
+    def is_pending(self) -> bool:
+        """True when discovery has not yet started."""
+        return self.status == "PENDING"
+
+    @property
+    def is_in_progress(self) -> bool:
+        """True when the worker is currently fetching events."""
+        return self.status == "IN_PROGRESS"
+
+    @property
+    def is_completed(self) -> bool:
+        """True when discovery has finished successfully."""
+        return self.status == "COMPLETED"
+
+    @property
+    def is_error(self) -> bool:
+        """True when discovery has terminated with an error."""
+        return self.status == "ERROR"
+
+    @property
+    def can_reready(self) -> bool:
+        """True when the contract can be re-discovered (PENDING or ERROR)."""
+        return self.status in ("PENDING", "ERROR")

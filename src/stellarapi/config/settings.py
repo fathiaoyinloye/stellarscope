@@ -11,6 +11,7 @@ STELLAR_SCOPE_API_V1_STR           /api/v1
 STELLAR_SCOPE_MONITORING_INTERVAL_SECONDS 60
 STELLAR_SCOPE_WORKER_LEASE_TIMEOUT_MINUTES 3
 STELLAR_SCOPE_OBSERVATION_DEADLINE_MINUTES 60
+STELLAR_SCOPE_SOROBAN_RPC_URL      https://soroban-testnet.stellar.org
 """
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -38,6 +39,12 @@ class Settings(BaseSettings):
 
     # Observation deadline (minutes)
     OBSERVATION_DEADLINE_MINUTES: int = 60
+
+    # RPC timeout (seconds)
+    RPC_TIMEOUT_SECONDS: int = 30
+
+    # Soroban RPC URL
+    SOROBAN_RPC_URL: str = "https://soroban-testnet.stellar.org"
 
 
 # Singleton instance; created at module import time so other packages can

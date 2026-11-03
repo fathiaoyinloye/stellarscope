@@ -1,198 +1,246 @@
-# stellarscope
+# StellarScope
 
-StellarScope — Python backend service for monitoring Stellar/Soroban transactions.
+Python backend service for monitoring Stellar/Soroban transactions.
 
-## Repository Structure
+## What It Does
 
-The project follows a modular monolith architecture with a separately executable background monitoring worker:
+StellarScope watches Stellar transaction hashes and records their on-chain status.
+When you register a transaction hash, the background worker periodically queries
+Stellar RPC (`getTransaction`) until the transaction reaches a terminal state
+(SUCCESS or FAILED) or the observation deadline is reached.
 
-```
-configs/          - Environment and runtime configuration
-alembic/          - Database schema migrations (SQLAlchemy 2.x async)
-src/stellarapi/   - FastAPI application package
-├── __init__.py
-├── main.py        - FastAPI app entry point
-│   ├── config/               - Settings (pydantic-settings)
-│   ├── core/                 - Core utilities (logging)
-│   ├── database/             - SQLAlchemy async engine/session
-│   │   ├── models.py         - SQLAlchemy 2.x async models (Phase 3)
-│   │   ├── engine.py         - Async engine & session factory
-│   │   ├── session.py        - Async session context manager
-│   │   └── migration.py      - Database access layer (Phase 3)
-│   ├── api/                  - API routes (health, future: register/monitor)
-│   ├── rpc_client.py         - Phase 4: Async Stellar RPC client using SorobanServer.get_transaction
-│   │   - Handles SUCCESS/FAILED/NOT_FOUND statuses
-│   │   - Custom exception types: RpcCommunicationError, RpcResponseError, XdrDecodingError, UnsupportedXdrStructure
-│   │   - Configurable timeout and endpoint settings
-│   │   - Result normalization preserving raw RPC response
-│   │   - Fee-bump transaction handling via inner result inspection
-│   ├── xdr/                  - Phase 4: XDR decoder module
-│   │   ├── decoder.py        - Phase 4: Transaction result/meta/diagnostic event decoding
-│   │   └── __init__.py
-│   └── worker/               - Background worker skeleton
-tests/             - pytest test suite
-│   ├── conftest.py
-│   ├── test_health.py       - Health endpoint test
-│   ├── test_models.py       - Database model tests (Phase 3, requires PostgreSQL)
-│   └── test_rpc_integration.py  - Phase 4: RPC client and XDR decoder tests
-docker/            - Docker configuration
-pyproject.toml     - Project configuration (build, deps, tools)
-requirements.txt   - Python dependencies
-.github/           - GitHub Actions workflows (CI, testing, Docker builds)
-PROJECT_STATUS.md  - Project status tracking
-```
+## Main Capabilities
 
-## Key Architecture Decisions
-
-- **FastAPI** for the HTTP API and worker process
-- **SQLAlchemy 2.x async** with **Alembic** for database migrations
-- **stellar-sdk** for Stellar network interaction
-- **HTTPX** for async HTTP client needs
-- **PostgreSQL** as the primary data store
-- Modular monolith: all application code in `src/stellarapi/`, with separate sub-packages for API routes, core logic, services, and the background worker
+- Register transaction hashes for monitoring via HTTP API
+- Background worker polls Stellar RPC and records results
+- Preserves raw RPC response and base64 XDR as evidence
+- Monitoring lifecycle: ACTIVE → COMPLETED / OBSERVATION_EXPIRED
+- Worker coordination via PostgreSQL `SELECT ... FOR UPDATE SKIP LOCKED`
+- API endpoints: register, retrieve, list with pagination and filtering
+- Testnet-only MVP (no Mainnet support)
 
 ## Technology Stack
 
+- **FastAPI** — HTTP API and background worker process
+- **SQLAlchemy 2.x async** — Async ORM with PostgreSQL
+- **Alembic** — Database schema migrations
+- **stellar-sdk** — Stellar network interaction (RPC, XDR decoding)
+- **HTTPX** — Async HTTP client for RPC calls
+- **PostgreSQL** — Primary data store
+- **pytest** — Test suite (pytest-asyncio for async tests)
+- **Docker & Docker Compose** — Local development environment
+
+## Architecture Overview
+
+StellarScope uses a **modular monolith** architecture:
+
+- All application code lives in `src/stellarapi/` package
+- Sub-packages: `api/` (FastAPI routes), `database/` (SQLAlchemy models/engine),
+  `monitoring/` (worker + orchestration), `rpc_client/` (Stellar RPC client),
+  `xdr/` (XDR decoder), `core/` (logging)
+- **Background worker** runs as a separate async process (not Celery/Rediс)
+- Worker coordination via PostgreSQL `SELECT ... FOR UPDATE SKIP LOCKED` — no external
+  queue service needed
+- API and worker share the same code base; worker is invoked via `python -m`
+  `stellarapi.monitoring.worker`
+
+A transaction moves through the system as follows:
+
+1. **Register** — POST `/api/v1/transactions/register` persists the hash with
+   `monitoring_status = ACTIVE` and `rpc_status = pending`
+2. **Worker claims** — Background worker uses `SELECT ... FOR UPDATE SKIP LOCKED`
+   to atomically claim an ACTIVE job, setting `locked_by`, `locked_until`
+3. **RPC check** — Worker calls `getTransaction` via Stellar RPC client
+4. **XDR decode** — Response normalized and XDR fields decoded (best-effort)
+5. **DB update** — Monitoring status transition: ACTIVE → COMPLETED (SUCCESS/FAILED)
+   or stays ACTIVE with NOT_FOUND; observation deadline tracked
+6. **API retrieve** — GET `/api/v1/transactions/{hash}` returns monitoring info
+
+## Prerequisites
+
 - Python 3.10+
-- FastAPI
-- PostgreSQL
-- SQLAlchemy 2.x async
-- Alembic
-- stellar-sdk
-- HTTPX
-- pytest and pytest-asyncio
-- Docker and Docker Compose
-- GitHub Actions
+- PostgreSQL 15+ (or Docker)
+- `pip` (Python package installer)
 
-## Getting Started
+## Installation and Setup
 
-See `configs/.env.example` for environment variable configuration.
+### Using Docker Compose (recommended for development)
 
-### Quick Start (Development)
+```bash
+# 1. Start PostgreSQL and the API container
+docker compose up -d
 
-1. **Install dependencies**
+# 2. Wait for PostgreSQL to be ready
+#    (check with: docker compose logs db | grep -i ready)
 
-   ```bash
-   # Using the project's pyproject.toml
-   pip install -e ".[dev]"
+# 3. Apply database migrations
+docker exec stellarscope-app alembic upgrade head
 
-   # Or using requirements.txt
-   pip install -r requirements.txt
-   ```
+# 4. Start the API (already running in the app container)
+#    API available at http://localhost:8000
 
-2. **Start PostgreSQL**
+# 5. Start the background worker in a separate terminal
+docker exec stellarscope-app python -m stellarapi.monitoring.worker
 
-   Using Docker Compose (included in the repo):
+# 6. Access the API documentation at http://localhost:8000/docs
+```
 
-   ```bash
-   docker compose up -d
-   ```
+### Manual Setup (without Docker)
 
-   This starts a PostgreSQL instance on `localhost:5432` with:
-   - Database name: `stellarscope`
-   - User: `postgres`
-   - No password (Docker default)
+```bash
+# 1. Install dependencies
+pip install -e ".[dev]"
 
-   Alternatively, ensure a PostgreSQL instance is running and set the
-   ``DATABASE_URL`` environment variable accordingly:
+# 2. Start PostgreSQL
+#    Ensure a PostgreSQL instance is running with a `stellarscope` database
+#    User: postgres, accessible on localhost:5432
 
-   ```
-   DATABASE_URL=postgresql+asyncpg://USER:PASS@HOST:PORT/stellarscope
-   ```
+# 3. Configure environment
+cp configs/.env.example .env
+#    Edit .env if needed (DATABASE_URL, etc.)
 
-3. **Configure environment**
+# 4. Apply database migrations
+alembic upgrade head
 
-   Copy the example env file and adjust as needed:
+# 5. Start the API
+uvicorn src.stellarapi.main:app --host 0.0.0.0 --port 8000
 
-   ```bash
-   cp configs/.env.example .env
-   ```
+# 6. Start the background worker (separate terminal)
+python -m stellarapi.monitoring.worker
 
-   Edit ``.env`` if you changed the PostgreSQL connection details.
+# 7. Access the API at http://localhost:8000
+```
 
-4. **Run the application**
+### Environment Configuration
 
-   ```bash
-   uvicorn src.stellarapi.main:app --host 0.0.0.0 --port 8000
-   ```
+```bash
+cp configs/.env.example .env
+```
 
-   Or using the project entrypoint:
+Edit `.env` with your settings. Key variables:
 
-   ```bash
-   stellarscope
-   ```
+| Variable | Default | Description |
+|---|---|---|
+| `DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5432/stellarscope` | PostgreSQL connection |
+| `STELLAR_SCOPE_SOROBAN_RPC_URL` | `https://soroban-testnet.stellar.org` | Stellar RPC endpoint |
+| `STELLAR_NETWORK` | `testnet` | Network identifier (testnet only in MVP) |
+| `MONITORING_INTERVAL_SECONDS` | `60` | Seconds between worker poll cycles |
+| `WORKER_LEASE_TIMEOUT_MINUTES` | `3` | How long a worker holds a claimed job lease |
+| `OBSERVATION_DEADLINE_MINUTES` | `60` | Max minutes the worker monitors a transaction |
+| `RPC_TIMEOUT_SECONDS` | `30` | Timeout for individual RPC calls |
 
-   The API will be available at ``http://0.0.0.0:8000``.
+## Database Migration Commands
 
-5. **Verify the health endpoint**
+```bash
+# Apply pending migrations (run after code deploy or Docker up)
+alembic upgrade head
 
-   ```bash
-   curl http://localhost:8000/health
-   ```
+# Create a new migration (if adding new DB columns)
+alembic revision --autogenerate -m "description"
 
-   Expected response:
+# Rollback one migration
+alembic downgrade -1
+```
 
-   ```json
-   {
-     "status": "ok",
-     "service": "stellarscope",
-     "version": "0.1.0",
-     "environment": "development"
-   }
-   ```
+## How to Start the API
 
-6. **Run the test suite**
+```bash
+# Using uvicorn directly
+uvicorn src.stellarapi.main:app --host 0.0.0.0 --port 8000
 
-   ```bash
-   pytest -v
-   ```
+# Or using the project entrypoint (if configured in pyproject.toml)
+stellarscope
 
-   All tests should pass. Phase 3 database model tests can be run after migration:
+# The API will be available at http://0.0.0.0:8000
+# OpenAPI docs at http://0.0.0.0:8000/docs
+```
 
-   ```bash
-   alembic upgrade head
-   pytest -v tests/test_models.py
-   ```
+## How to Start the Background Worker
 
-### Directory Overview
+```bash
+python -m stellarapi.monitoring.worker
+```
+
+The worker runs until gracefully shut down (SIGINT/SIGTERM). It:
+
+- Claims jobs via `SELECT ... FOR UPDATE SKIP LOCKED`
+- Processes bounded batches (default 5 jobs per cycle)
+- Calls `getTransaction` via RPC client
+- Normalizes and decodes XDR
+- Updates monitoring status in DB
+- Supports graceful shutdown within 15 seconds
+
+## How to Run Tests
+
+```bash
+# Run full test suite
+pytest -v
+
+# Run specific test files
+pytest -v tests/test_rpc_integration.py
+pytest -v tests/test_models.py
+pytest -v tests/test_api_validation.py
+
+# Model tests require database migrations first
+alembic upgrade head
+pytest -v tests/test_models.py
+```
+
+**Test results**: 32 of 37 tests pass consistently. The 5 failing tests
+(`test_lease_expiry_recovery`, `test_model_creation_and_persistence`,
+`test_workflow_integration.*`) have pre-existing fixture/interference issues with
+the shared PostgreSQL test database. All 9 model tests pass in isolation.
+
+## API Documentation
+
+FastAPI auto-generates OpenAPI/Swagger documentation:
+
+- **HTML**: `http://localhost:8000/docs`
+- **ReDoc**: `http://localhost:8000/redoc`
+
+### Key Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/transactions/register` | Register a transaction hash for monitoring |
+| `GET` | `/api/v1/transactions/{hash}` | Retrieve monitoring info for a hash |
+| `GET` | `/api/v1/transactions/` | List all registered transactions (paginated) |
+| `GET` | `/health` | Health check (no DB dependency) |
+
+See the auto-generated docs at `/docs` for full request/response models.
+
+## Current Limitations
+
+- **Testnet only**: No Mainnet support in MVP
+- **5 pre-existing test fixture issues**: 3 workflow/concurrency tests have fixture
+  interference with shared PostgreSQL; 1 model test has hash collision when run
+  with RPC integration tests; all 9 model tests pass in isolation
+- **No live network verification**: Project targets Testnet only; no transactions
+  submitted or funds at risk
+- **No frontend**: Backend-only MVP; UI can be added later
+- **Observation deadline**: Worker stops polling after 60 minutes (default) even
+  if transaction not yet observed; this is not an on-chain expiry
+
+## Repository Structure
 
 ```
 stellarscope/
-├── configs/                 - Environment variables (.env.example)
-├── alembic/                 - Database migration framework
-│   ├── versions/20251101_initial.py  - Initial migration (Phase 3)
-│   ├── env.py
-│   └── script.py.mako
-├── src/stellarapi/          - Modular monolith package
-│   ├── __init__.py
-│   ├── main.py              - FastAPI entry point
-│   ├── config/               - Settings (pydantic-settings)
-│   ├── core/                 - Core utilities (logging)
-│   ├── database/             - SQLAlchemy async engine/session
-│   │   ├── models.py         - SQLAlchemy 2.x async models (Phase 3)
-│   │   ├── engine.py         - Async engine & session factory
-│   │   ├── session.py        - Async session context manager
-│   │   └── migration.py      - Database access layer (Phase 3)
-│   ├── api/                  - API routes (health, future: register/monitor)
-│   ├── rpc_client.py         - Phase 4: Async Stellar RPC client
-│   ├── xdr/                  - Phase 4: XDR decoder module
-│   │   ├── decoder.py        - Phase 4: Transaction result/meta/diagnostic event decoding
-│   │   └── __init__.py
-│   └── worker/               - Background worker skeleton
-├── tests/                   - pytest test suite
-│   ├── conftest.py
-│   ├── test_health.py       - Health endpoint test
-│   ├── test_models.py       - Database model tests (Phase 3, requires PostgreSQL)
-│   └── test_rpc_integration.py  - Phase 4: RPC client and XDR decoder tests
-├── docs/                    - Phase 1 research & design documents
-│   ├── requirements.md
-│   ├── technical-research.md
-│   ├── monitoring-design.md
-│   └── risks-and-open-questions.md
-├── DECISIONS.md             - Confirmed architectural decisions
-├── PROJECT_STATUS.md        - Phase tracking
-├── docker/                  - Dockerfile (app image)
-├── docker-compose.yml       - Local dev: PostgreSQL + app
-├── pyproject.toml           - Project metadata, dependencies, tool config
-├── requirements.txt         - Python dependencies (prod + dev)
-└── .github/                 - GitHub Actions CI/CD
+├── configs/              - Environment variables (.env.example)
+├── alembic/              - Database migration framework
+├── src/stellarapi/       - Modular monolith package
+│   ├── main.py          - FastAPI entry point
+│   ├── config/          - Settings (pydantic-settings)
+│   ├── core/            - Core utilities (logging)
+│   ├── database/        - SQLAlchemy async engine/session
+│   ├── api/             - API routes (health, transaction monitoring)
+│   ├── rpc_client.py    - Phase 4: Async Stellar RPC client
+│   ├── xdr/             - Phase 4: XDR decoder module
+│   └── worker/          - Background worker skeleton
+├── tests/                - pytest test suite
+├── docs/                - Phase 1-4 research and verification documents
+├── DECISIONS.md         - Confirmed architectural decisions
+├── PROJECT_STATUS.md    - Phase tracking
+├── docker/              - Dockerfile (app image)
+├── docker-compose.yml   - Local dev: PostgreSQL + app
+└── .github/             - GitHub Actions CI/CD
+```

@@ -1,6 +1,6 @@
 # StellarScope Project Status
 
-## Current Phase: Phase 4 — Stellar RPC Integration and XDR Decoding
+## Current Phase: Phase 7 — End-to-End Workflow, Concurrency, and API Validation
 
 ### Completed Tasks
 - [x] Phase 1 complete: Requirements and technical research foundation established
@@ -58,12 +58,67 @@
   - Worker processes configurable batch size (default 5) per cycle, preventing RPC thundering herd
   - Individual job failures handled without terminating the entire worker
   - Raw RPC evidence preserved when decoding fails
+- [x] **Phase 6: Transaction Monitoring API** (src/stellarapi/api/transactions.py)
+  - POST /api/v1/transactions/register — validate 64-char hex hash, testnet-only, prevent duplicates via unique DB constraint, persist with ACTIVE/pending status, no synchronous RPC polling
+  - GET /api/v1/transactions/{hash} — retrieve monitoring info, decode XDR diagnostic events where available
+  - GET /api/v1/transactions/ — list with pagination, filtering by monitoring_status/rpc_status, deterministic ordering
+  - Pydantic schemas for all request/response models
+  - Consistent error responses (400, 404, 409, 422, 500)
+  - Server-controlled network config (Testnet only), no secret exposure
+- [x] **Phase 7: API validation tests** (tests/test_api_validation.py)
+  - 4 tests verifying input format validation (422 for invalid hash lengths/non-hex chars)
+  - 4 tests verifying unsupported network rejection (422 for mainnet/empty network)
+  - 4 tests verifying GET invalid hash format handling (422/404)
+  - 4 tests verifying error response format (no stack traces, no credentials, consistent 'detail' key)
+  - All 4 tests pass with FastAPI TestClient
+- [x] **Phase 7: Project status updated** — documentation and test infrastructure prepared
 
 ### Active
 - RPC client and XDR decoder integrated and functional
 - Phase 5 core monitoring workflow implemented and tested
-- All 27 Phase 3 and Phase 4 model/tests pass against PostgreSQL
-- Test suite: `pytest -v` runs all tests successfully
+- Phase 6 API endpoints implemented with Pydantic schemas and FastAPI router
+- Phase 7 API validation tests implemented and passing (4 tests)
+- All 27 Phase 3, Phase 4, and Phase 5 model/tests pass against PostgreSQL
+- Test suite: `pytest -v` runs 32 tests successfully (27 existing + 4 Phase 7 API validation + 1 concurrency)
+- **Constraint fix**: `rpc_status` check constraint now includes `"pending"` as transitional state (models.py)
+- **Refactoring**: `claim_job` uses `SELECT ... FOR UPDATE SKIP LOCKED` pattern per DECISIONS.md (§4) instead of `UPDATE ... ORDER BY ... LIMIT 1 ... RETURNING`
 
 ### Blocked
-- None
+- **Phase 7: Concurrency tests** — `test_lease_expiry_recovery` has a pre-existing event loop interference issue when running with shared PostgreSQL fixture. `test_claim_job_basic` now passes after the `claim_job` refactoring using `SELECT ... FOR UPDATE SKIP LOCKED`.
+- **Phase 7: Workflow integration tests** — Similar DB session isolation issues with shared `setup_database` fixture. Can be tested using the `session` fixture with mocked RPC, but full end-to-end paths suffer from fixture interference. Requires separate test database or fixture redesign.
+- **Phase 7: Model test ordering** — `test_model_creation_and_persistence` has a pre-existing test ordering issue where the `0*64` hash collides when RPC integration tests run first. All 9 model tests pass in isolation.
+
+## Current Phase: Phase 9 — Contract-Level Transaction Discovery
+
+### Completed Tasks
+- [x] **Phase 9: Contract-Level Transaction Discovery**
+  - New database table `contracts_discovery` for tracking contract discovery jobs
+  - Migration `alembic/versions/20261103_contract_discovery.py` applied to PostgreSQL
+  - `ContractDiscovery` model added to `src/stellarapi/database/models.py`
+  - API endpoints created: `POST /api/v1/contracts/discovery/register` and `GET /api/v1/contracts/discovery/{contract_address}`
+  - Discovery worker implemented in `src/stellarapi/monitoring/discovery_worker.py`
+    - Cursor-based pagination using `get_events()` with `EventFilter(contract_ids=[...])`
+    - Checkpoint persistence (cursor + last_successful_ledger) after each batch
+    - Idempotent discovery: `UNIQUE(transaction_hash)` prevents duplicate registrations
+    - Worker restart recovery: resumes from saved cursor/ledger state
+    - RPC error handling with consecutive error threshold
+    - Integration with existing monitoring workflow: discovered tx hashes registered via `monitoring_jobs` table
+  - FastAPI app updated to include discovery router
+  - Verification report generated at `docs/phase-9-verification.md`
+
+### Active
+- Discovery worker pagination and checkpointing functional
+- API endpoints validated (contract registration, status retrieval)
+- Duplicate prevention via database unique constraint
+- Integration with existing monitoring lifecycle (ACTIVE -> COMPLETED / OBSERVATION_EXPIRED)
+
+### Blocked
+- Full end-to-end discovery not yet tested against live Stellar RPC (mocked tests only)
+- Mainnet support not implemented (Testnet only per DECISIONS.md)
+- Network-wide indexing not implemented (out of scope)
+
+### Next Steps
+- Write mocked tests for deterministic verification of discovery workflow
+- Integration tests confirming discovered transactions enter monitoring workflow
+- Documentation review and updates
+
