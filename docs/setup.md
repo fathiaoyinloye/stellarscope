@@ -219,7 +219,8 @@ Output is in `frontend/dist/`. This can be served by any static file server.
 #### Step 5: Run Frontend Tests
 
 ```bash
-npm test
+# Frontend has no test script; run npm run build instead
+npm run build
 ```
 
 ## 3. Common Setup Problems and Solutions

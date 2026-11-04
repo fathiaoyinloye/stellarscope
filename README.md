@@ -406,8 +406,9 @@ PYTHONPATH=src python3 -m pytest tests/ -v --tb=short
 ### Frontend Tests
 
 ```bash
+# Frontend has no test script; run npm run build to build the production assets
 cd frontend
-npm test
+npm run build
 ```
 
 ### Integration

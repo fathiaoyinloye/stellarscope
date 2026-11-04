@@ -11,6 +11,7 @@ import pytest
 
 from stellarapi.database.engine import engine as async_engine
 from stellarapi.monitoring.job_claimer import claim_job, release_job
+from stellarapi.rpc_client import RpcClient
 from stellarapi.database.models import MonitoringJob
 
 
@@ -36,8 +37,9 @@ async def test_claim_job_basic() -> None:
             )
         )
 
-    # Claim the job
-    claimed = await claim_job(async_engine)
+    # Claim the job - rpc_client is required by the implementation
+    rpc_client = RpcClient()
+    claimed = await claim_job(async_engine, rpc_client)
     assert claimed is not None, "Should be able to claim a job"
     assert claimed["transaction_hash"] == "e" * 64
     assert claimed["locked_by"] is not None

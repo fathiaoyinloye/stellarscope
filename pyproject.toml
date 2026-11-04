@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "StellarScope - Stellar transaction monitoring service"
 
 [tool.setuptools.packages.find]
-where = ["backend", "frontend"]
+where = ["backend"]
 
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]

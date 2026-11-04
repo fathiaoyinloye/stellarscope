@@ -12,6 +12,7 @@ These tests use a real PostgreSQL connection and verify:
 import pytest
 import sqlalchemy
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
 
 from stellarapi.database.models import Base, MonitoringJob
 
