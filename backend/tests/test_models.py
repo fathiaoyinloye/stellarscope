@@ -11,39 +11,10 @@ These tests use a real PostgreSQL connection and verify:
 """
 import pytest
 import sqlalchemy
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+
+from sqlalchemy.exc import IntegrityError
 
 from stellarapi.database.models import Base, MonitoringJob
-
-
-# Test database URL - use Docker Compose PostgreSQL or fall back to localhost
-TEST_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/stellarscope"
-
-
-@pytest.fixture(scope="session", autouse=True)
-async def setup_database():
-    """Set up and tear down the test database schema."""
-    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-
-    async with engine.begin() as conn:
-        # Create all tables defined in Base.metadata
-        await conn.run_sync(Base.metadata.create_all)
-
-    yield  # Run tests
-
-    # Drop all tables after tests
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-    await engine.dispose()
-
-
-@pytest.fixture(scope="function")
-async def session(setup_database) -> AsyncSession:
-    """Create a function-scoped async session for each test."""
-    async_session = sessionmaker(setup_database, class_=AsyncSession, expire_on_commit=False)
-    async with async_session() as session:
-        yield session
 
 
 @pytest.mark.asyncio
@@ -108,7 +79,7 @@ async def test_unique_transaction_hash_constraint(session) -> None:
     )
     session.add(job2)
 
-    with pytest.raises(sqlalchemy.exc.IntegrityError):
+    with pytest.raises(IntegrityError):
         await session.commit()
 
     # The second job should not be in the database
@@ -131,7 +102,7 @@ async def test_required_fields_and_constraints(session) -> None:
     )
     session.add(job)
 
-    with pytest.raises(sqlalchemy.exc.IntegrityError):
+    with pytest.raises(IntegrityError):
         await session.commit()
 
 
@@ -224,7 +195,7 @@ async def test_rpc_status_constraint(session) -> None:
     )
     session.add(job)
 
-    with pytest.raises(sqlalchemy.exc.IntegrityError):
+    with pytest.raises(IntegrityError):
         await session.commit()
 
 
@@ -239,7 +210,7 @@ async def test_monitoring_status_constraint(session) -> None:
     )
     session.add(job)
 
-    with pytest.raises(sqlalchemy.exc.IntegrityError):
+    with pytest.raises(IntegrityError):
         await session.commit()
 
 
@@ -247,7 +218,7 @@ async def test_monitoring_status_constraint(session) -> None:
 # Migration test
 # ---------------------------------------------------------------------------
 
-import sqlalchemy
+from sqlalchemy import text
 
 
 @pytest.mark.asyncio
@@ -258,7 +229,7 @@ async def test_migration_execution(session) -> None:
     async with session.begin():
         # Check that the monitoring_jobs table exists
         result = await session.execute(
-            sqlalchemy.text(
+            text(
                 "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'monitoring_jobs')"
             )
         )

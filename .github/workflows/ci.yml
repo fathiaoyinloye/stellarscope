@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -10,10 +10,24 @@ jobs:
   test:
     name: Run test suite
     runs-on: ubuntu-latest
-    container:
-      image: python:3.12-slim
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: stellarscope
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        # Set vital postgresql so the db container is useful
+        shm_size: 1gb
+
     env:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/stellarscope
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/stellarscope
       STELLAR_NETWORK: testnet
       STELLAR_SCOPE_LOG_LEVEL: INFO
       MONITORING_INTERVAL_SECONDS: 60
@@ -35,7 +49,11 @@ jobs:
           pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run tests
+      - name: Run database migrations
+        run: |
+          alembic upgrade head
+
+      - name: Run backend tests
         run: |
           pytest -v
 
@@ -45,3 +63,8 @@ jobs:
         with:
           name: test-results
           path: .
+
+      - name: Build frontend production assets
+        run: |
+          cd frontend
+          npm run build

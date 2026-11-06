@@ -1,7 +1,8 @@
 """Debug test for database models."""
 import pytest
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-from sqlalchemy.orm import declarative_base
+
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import sessionmaker
 
 from stellarapi.database.models import Base, MonitoringJob
 
@@ -11,29 +12,25 @@ TEST_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/stell
 @pytest.fixture(scope="session", autouse=True)
 async def setup_database():
     """Set up and tear down the test database schema."""
-    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-    
+    engine = create_async_engine(
+        TEST_DATABASE_URL, echo=False, future=True
+    )
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    
+
     yield
-    
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
 
 
 @pytest.fixture(scope="function")
-async def session_factory_fresh():
-    """Create a fresh session factory for each test."""
-    engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-    return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-
-@pytest.fixture(scope="function")
-async def session(session_factory_fresh) -> AsyncSession:
+async def session(setup_database) -> AsyncSession:
     """Create a function-scoped async session for each test."""
-    async with session_factory_fresh() as session:
+    async_session = async_sessionmaker(bind=setup_database, class_=AsyncSession, expire_on_commit=False)
+    async with async_session() as session:
         yield session
 
 
@@ -55,7 +52,7 @@ async def test_model_creation_and_persistence(session) -> None:
     session.add(job)
     await session.commit()
     await session.refresh(job)
-    
+
     assert job.id is not None
     assert job.transaction_hash == "0" * 64
     assert job.network == "testnet"

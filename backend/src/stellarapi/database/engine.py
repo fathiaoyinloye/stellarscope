@@ -38,12 +38,10 @@ engine: AsyncEngine = create_async_engine(
 #: - ``class_=AsyncSession`` — the async session factory.
 #: - ``expire_on_commit=True`` (default) — attributes are expired after commit,
 #   requiring refresh access if needed after a transaction boundary.
-#: - ``autoflush_before_commit=True`` — ensures consistent reads within a request.
 session_factory = async_sessionmaker(
     bind=engine,
     class_=AsyncSession,
     expire_on_commit=True,
-    autoflush_before_commit=True,
 )
 
 

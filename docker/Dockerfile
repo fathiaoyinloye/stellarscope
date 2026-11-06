@@ -6,7 +6,13 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN pip install --no-cache-dir greenlet
+
 COPY backend/src ./src
+COPY alembic.ini .
+COPY alembic ./alembic
+
+ENV PYTHONPATH=/app/src
 
 EXPOSE 8000
 

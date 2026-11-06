@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock
 
 import pytest
@@ -63,6 +64,65 @@ def make_mock_rpc_response(
     }
 
 
+def make_mock_rpc_result(
+    *,
+    status: str = "SUCCESS",
+    transaction_hash: str = "0" * 64,
+    ledger: int = 12345,
+    close_time: int = 1234567890,
+    oldest_ledger: int = 1234000,
+    create_at: int = 1234000,
+    application_order: int = 1,
+    fee_bump: bool = False,
+    envelope_xdr: str = "AAAABQAAAAD",
+    result_xdr: str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAFgAA",
+    result_meta_xdr: str = "AAAAAgAAAAIAAAAD",
+    diagnostic_events_xdr: Optional[list] = None,
+    events: Optional[Any] = None,
+) -> GetTransactionResult:
+    """Build a mock GetTransactionResult object matching SorobanServer.get_transaction output.
+
+    The returned object has an ``rpc_status`` attribute and other fields
+    expected by ``perform_monitoring_check``.
+    """
+    # Create a simple rpc_status object with .value attribute
+    class _RpcStatus:
+        def __init__(self, value: str):
+            self.value = value
+
+    raw = make_mock_rpc_response(
+        status=status,
+        transaction_hash=transaction_hash,
+        ledger=ledger,
+        close_time=close_time,
+        oldest_ledger=oldest_ledger,
+        create_at=create_at,
+        application_order=application_order,
+        fee_bump=fee_bump,
+        envelope_xdr=envelope_xdr,
+        result_xdr=result_xdr,
+        result_meta_xdr=result_meta_xdr,
+        diagnostic_events_xdr=diagnostic_events_xdr,
+        events=events,
+    )
+    return GetTransactionResult(
+        rpc_status=_RpcStatus(status),
+        transaction_hash=raw["transaction_hash"],
+        ledger=raw["ledger"],
+        close_time=raw["latest_ledger_close_time"],
+        oldest_ledger=raw["oldest_ledger"],
+        create_at=raw["create_at"],
+        application_order=raw["application_order"],
+        fee_bump=raw["fee_bump"],
+        envelope_xdr=raw["envelope_xdr"],
+        result_xdr=raw["result_xdr"],
+        result_meta_xdr=raw["result_meta_xdr"],
+        diagnostic_events_xdr=raw["diagnostic_events_xdr"],
+        events=raw.get("events"),
+        raw_rpc_response=raw,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Test: Complete Successful Workflow
 # Register → DB persist → Worker claim → RPC SUCCESS → XDR decode → DB COMPLETED
@@ -85,7 +145,7 @@ async def test_full_successful_workflow(session) -> None:
     await session.refresh(job)
 
     # 2️⃣ Mock the RPC call to return SUCCESS
-    mock_rpc_result = make_mock_rpc_response(
+    mock_rpc_result = make_mock_rpc_result(
         status="SUCCESS",
         ledger=12345,
         result_xdr="AAAAXDR",
@@ -114,7 +174,7 @@ async def test_full_successful_workflow(session) -> None:
         # 4️⃣ Verify DB was updated to COMPLETED (using the session fixture)
         await session.refresh(job)
         assert job.monitoring_status == "COMPLETED", f"Expected COMPLETED, got {job.monitoring_status}"
-        assert job.rpc_status.value == "SUCCESS", f"Expected SUCCESS, got {job.rpc_status}"
+        assert job.rpc_status == "SUCCESS", f"Expected SUCCESS, got {job.rpc_status}"
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +199,7 @@ async def test_full_failed_workflow(session) -> None:
 
     # 2️⃣ Mock the RPC call to return FAILED
     with patch.object(RpcClient, "get_transaction", new_callable=AsyncMock) as mock_get_tx:
-        mock_get_tx.return_value = make_mock_rpc_response(
+        mock_get_tx.return_value = make_mock_rpc_result(
             status="FAILED",
             ledger=99999,
         )
@@ -162,7 +222,7 @@ async def test_full_failed_workflow(session) -> None:
         # 4️⃣ Verify DB updated to COMPLETED with FAILED status
         await session.refresh(job)
         assert job.monitoring_status == "COMPLETED", f"Expected COMPLETED, got {job.monitoring_status}"
-        assert job.rpc_status.value == "FAILED", f"Expected FAILED, got {job.rpc_status}"
+        assert job.rpc_status == "FAILED", f"Expected FAILED, got {job.rpc_status}"
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +247,7 @@ async def test_full_not_found_workflow(session) -> None:
 
     # 2️⃣ Mock the RPC call to return NOT_FOUND
     with patch.object(RpcClient, "get_transaction", new_callable=AsyncMock) as mock_get_tx:
-        mock_get_tx.return_value = make_mock_rpc_response(
+        mock_get_tx.return_value = make_mock_rpc_result(
             status="NOT_FOUND",
             transaction_hash=job.transaction_hash,
         )
@@ -210,5 +270,5 @@ async def test_full_not_found_workflow(session) -> None:
         # 4️⃣ Verify DB still ACTIVE with NOT_FOUND, next_check_at set
         await session.refresh(job)
         assert job.monitoring_status == "ACTIVE", f"Expected ACTIVE, got {job.monitoring_status}"
-        assert job.rpc_status.value == "NOT_FOUND", f"Expected NOT_FOUND, got {job.rpc_status}"
+        assert job.rpc_status == "NOT_FOUND", f"Expected NOT_FOUND, got {job.rpc_status}"
         assert job.next_check_at is not None, "next_check_at should be set to a future time"

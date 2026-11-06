@@ -122,47 +122,37 @@ async def claim_job(
     async with async_engine.begin() as conn:
         try:
             # --- Attempt to claim a job ---
-            # We update only jobs that are ACTIVE and whose lease has expired.
-            # RETURNING gives us the updated row values.
+            # We use SELECT ... FOR UPDATE SKIP LOCKED to atomically claim an ACTIVE
+            # job whose lease has expired.  This is the standard PostgreSQL idiom for
+            # concurrent job claiming and is supported by asyncpg.
             row = await conn.execute(
                 text(
                     """
-                    UPDATE monitoring_jobs
-                    SET
-                        locked_by = :worker_id,
-                        locked_until = :lease_expiry,
-                        next_check_at = :next_check,
-                        attempt_count = attempt_count + 1
-                    WHERE
-                        monitoring_status = 'ACTIVE'
-                        AND (locked_until IS NULL OR locked_until < now())
-                    ORDER BY locked_until ASC NULLS FIRST, created_at ASC
+                    SELECT id,
+                           transaction_hash,
+                           network,
+                           locked_by,
+                           locked_until,
+                           next_check_at,
+                           attempt_count,
+                           raw_rpc_response,
+                           rpc_status,
+                           monitoring_status,
+                           fee_bump,
+                           envelope_xdr,
+                           result_xdr,
+                           result_meta_xdr,
+                           ledger,
+                           failure_reason,
+                           created_at
+                    FROM monitoring_jobs
+                    WHERE monitoring_status = 'ACTIVE'
+                      AND (locked_until IS NULL OR locked_until < now())
+                    FOR UPDATE SKIP LOCKED
                     LIMIT 1
-                    RETURNING
-                        id,
-                        transaction_hash,
-                        network,
-                        locked_by,
-                        locked_until,
-                        next_check_at,
-                        attempt_count,
-                        raw_rpc_response,
-                        rpc_status,
-                        monitoring_status,
-                        fee_bump,
-                        envelope_xdr,
-                        result_xdr,
-                        result_meta_xdr,
-                        ledger,
-                        failure_reason,
-                        created_at
                     """
                 ),
-                {
-                    "worker_id": worker_id,
-                    "lease_expiry": lease_expiry,
-                    "next_check": next_check,
-                },
+                {}
             )
 
             fetched = row.first()
@@ -172,7 +162,38 @@ async def claim_job(
                 logger.debug("No job available for claiming (all ACTIVE jobs locked or terminal).")
                 return None
 
-            job = dict(fetched)
+            job = dict(fetched._mapping)
+
+            # The row is already locked by the SELECT above; take ownership of
+            # it in the same transaction so competing workers skip it until the
+            # lease expires (matching the documented lease-based design).
+            await conn.execute(
+                text(
+                    """
+                    UPDATE monitoring_jobs
+                    SET locked_by = :worker_id,
+                        locked_until = :lease_expiry,
+                        next_check_at = :next_check,
+                        attempt_count = attempt_count + 1
+                    WHERE id = :job_id
+                    """
+                ),
+                {
+                    "worker_id": worker_id,
+                    "lease_expiry": lease_expiry,
+                    "next_check": next_check,
+                    "job_id": job["id"],
+                },
+            )
+
+            # Reflect the claim in the returned payload, including the
+            # documented ``job_id`` alias expected by the worker.
+            job["job_id"] = job["id"]
+            job["locked_by"] = worker_id
+            job["locked_until"] = lease_expiry
+            job["next_check_at"] = next_check
+            job["attempt_count"] = (job.get("attempt_count") or 0) + 1
+
             logger.info(
                 "Job claimed: id=%s hash=%s by %s (lease until %s)",
                 job["id"],

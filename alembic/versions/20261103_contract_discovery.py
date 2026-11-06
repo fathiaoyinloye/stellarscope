@@ -8,7 +8,6 @@ Create Date: 2026-11-03 14:00:00.000000
 from alembic import op
 import sqlalchemy as sa
 import sqlalchemy.dialects.postgresql as pg
-from sqlalchemy.sql import text
 
 # revision identifiers, used by Alembic.
 revision = "20261103_contract_discovery"
@@ -29,60 +28,60 @@ def upgrade() -> None:
         ),
         sa.Column(
             "contract_address",
-            CHAR(64),
+            sa.CHAR(64),
             nullable=False,
             index=True,
             comment="64-char hex Soroban contract address",
         ),
         sa.Column(
             "network",
-            String(16),
+            sa.String(16),
             nullable=False,
             server_default="testnet",
             comment="Stellar network identifier (testnet | mainnet)",
         ),
         sa.Column(
             "status",
-            String(32),
+            sa.String(32),
             nullable=False,
             server_default="PENDING",
             comment="Discovery status: PENDING | IN_PROGRESS | COMPLETED | ERROR",
         ),
         sa.Column(
             "cursor",
-            Text,
+            sa.Text,
             nullable=True,
             comment="Pagination cursor from last get_events() call",
         ),
         sa.Column(
             "last_ledger",
-            Integer,
+            sa.Integer,
             nullable=True,
             comment="Last ledger processed",
         ),
         sa.Column(
             "last_successful_ledger",
-            Integer,
+            sa.Integer,
             nullable=False,
             server_default=sa.text("0"),
             comment="Last ledger where transactions were safely discovered",
         ),
         sa.Column(
             "error_message",
-            Text,
+            sa.Text,
             nullable=True,
             comment="Last error message (if any)",
         ),
         sa.Column(
             "error_count",
-            Integer,
+            sa.Integer,
             nullable=False,
             server_default=sa.text("0"),
             comment="Consecutive error count",
         ),
         sa.Column(
             "discovered_count",
-            Integer,
+            sa.Integer,
             nullable=False,
             server_default=sa.text("0"),
             comment="Total transactions discovered and registered",

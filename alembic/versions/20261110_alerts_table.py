@@ -2,7 +2,6 @@
 from alembic import op
 import sqlalchemy as sa
 import sqlalchemy.dialects.postgresql as pg
-from sqlalchemy.sql import text
 
 # revision identifiers, used by Alembic.
 revision = "20261110_alerts_table"
@@ -23,27 +22,27 @@ def upgrade() -> None:
         ),
         sa.Column(
             "transaction_hash",
-            CHAR(64),
+            sa.CHAR(64),
             nullable=True,
             index=True,
             comment="64-char hex Stellar transaction hash (nullable for RPC-level alerts)",
         ),
         sa.Column(
             "network",
-            String(16),
+            sa.String(16),
             nullable=False,
             server_default="testnet",
             comment="Stellar network identifier",
         ),
         sa.Column(
             "alert_type",
-            String(32),
+            sa.String(32),
             nullable=False,
             comment="Type of alert: SUCCESS | FAILED | OBSERVATION_EXPIRED | RPC_UNAVAILABLE",
         ),
         sa.Column(
             "status",
-            String(32),
+            sa.String(32),
             nullable=False,
             server_default="pending",
             comment="Alert status: pending | delivered | failed",
@@ -56,14 +55,14 @@ def upgrade() -> None:
         ),
         sa.Column(
             "delivery_attempts",
-            Integer,
+            sa.Integer,
             nullable=False,
             server_default=sa.text("0"),
             comment="Number of delivery attempts made",
         ),
         sa.Column(
             "last_error",
-            Text,
+            sa.Text,
             nullable=True,
             comment="Last error message from delivery attempt",
         ),

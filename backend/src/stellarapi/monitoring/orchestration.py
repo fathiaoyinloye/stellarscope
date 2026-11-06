@@ -12,8 +12,9 @@ claiming a job, invoking this service, and releasing the lease.
 
 from __future__ import annotations
 
+import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -265,7 +266,11 @@ async def perform_monitoring_check(
         new_failure_reason = (
             decoded_result.result_code if decoded_result else None
         )
-        new_next_check = None  # no further polling needed; terminal
+        # Set next_check_at to current time - no further polling needed since
+        # the status is terminal, but the column is NOT NULL so we must provide
+        # a value.  The WHERE monitoring_status = 'ACTIVE' clause in the UPDATE
+        # will prevent any stale row from being updated.
+        new_next_check = datetime.now(timezone.utc)
 
     else:
         # Should not happen given the type system, but fallback.
@@ -287,7 +292,7 @@ async def perform_monitoring_check(
                 SET
                     rpc_status = :rpc_status,
                     monitoring_status = :monitoring_status,
-                    raw_rpc_response = :raw_rpc_response::jsonb,
+                    raw_rpc_response = CAST(:raw_rpc_response AS jsonb),
                     envelope_xdr = :envelope_xdr,
                     result_xdr = :result_xdr,
                     result_meta_xdr = :result_meta_xdr,
@@ -307,7 +312,7 @@ async def perform_monitoring_check(
                 {
                     "rpc_status": new_rpc_status.value,
                     "monitoring_status": new_monitoring_status,
-                    "raw_rpc_response": new_raw_rpc_response,
+                    "raw_rpc_response": json.dumps(new_raw_rpc_response),
                     "envelope_xdr": envelope_xdr or rpc_result.envelope_xdr,
                     "result_xdr": result_xdr or rpc_result.result_xdr,
                     "result_meta_xdr": result_meta_xdr or rpc_result.result_meta_xdr,

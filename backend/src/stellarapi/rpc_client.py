@@ -269,8 +269,10 @@ class RpcClient:
             raise ValueError(msg)
 
         try:
+            # ``SorobanServer`` is the synchronous stellar-sdk client; calling
+            # it returns the response directly (it is not awaitable).
             raw: stellar_sdk.soroban_rpc.GetTransactionResponse = (
-                await self.server.get_transaction(transaction_hash)
+                self.server.get_transaction(transaction_hash)
             )
         except (
             ConnectionError,
@@ -361,8 +363,12 @@ class RpcClient:
             "diagnostic_events_xdr": raw.diagnostic_events_xdr,
             "events": (
                 {
-                    "type": events.type if events else None,
-                    "attributes": events.attributes if events else None,
+                    "transaction_events_xdr": events.transaction_events_xdr
+                    if events
+                    else None,
+                    "contract_events_xdr": events.contract_events_xdr
+                    if events
+                    else None,
                 }
                 if events
                 else None

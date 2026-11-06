@@ -1,5 +1,7 @@
 import React, {useEffect, useState} from 'react'
 import axios from 'axios'
+import { createRoot } from 'react-dom/client'
+import App from './App'
 
 interface Transaction {
   id: string
@@ -27,6 +29,8 @@ export default function TransactionListComponent() {
   const [loading, setLoading] = useState(true)
   const [page, setPage] = useState(1)
   const [perPage, setPerPage] = useState(20)
+  const [total, setTotal] = useState(0)
+  const [totalPages, setTotalPages] = useState(0)
 
   useEffect(() => {
     fetchTransactions()
@@ -40,6 +44,8 @@ export default function TransactionListComponent() {
         withCredentials: true,
       })
       setTransactions(response.data.items)
+      setTotal(response.data.total)
+      setTotalPages(response.data.total_pages)
     } catch (error) {
       console.error('Failed to fetch transactions:', error)
     } finally {
@@ -121,4 +127,11 @@ export default function TransactionListComponent() {
       </div>
     </div>
   )
+}
+
+// Mount the React application into the #root DOM element
+const container = document.getElementById('root')
+if (container) {
+  const root = createRoot(container)
+  root.render(<App />)
 }

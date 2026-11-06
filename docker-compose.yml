@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: postgres:15-alpine
@@ -8,9 +6,7 @@ services:
     environment:
       POSTGRES_DB: stellarscope
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ""
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+      POSTGRES_PASSWORD: postgres
     ports:
       - "5432:5432"
     healthcheck:
@@ -18,16 +14,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
 
   app:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: docker/Dockerfile
     container_name: stellarscope-app
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/stellarscope
       STELLAR_NETWORK: testnet
@@ -51,12 +54,30 @@ services:
       app:
         condition: service_healthy
     environment:
-      VITE_API_URL: "http://localhost:8000/api"
+      VITE_API_URL: "http://app:8000/api"
+      PROXY_TARGET: "http://app:8000"
       CORS_ORIGINS: "http://localhost:8000"
     ports:
       - "5173:5173"
-    volumes:
-      - /home/omotemmy/Documents/git-repositories/stellarscope/frontend/dist:/app/dist  # prod build mount
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: stellarscope-worker
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/stellarscope
+      STELLAR_NETWORK: testnet
+      STELLAR_SCOPE_LOG_LEVEL: INFO
+      MONITORING_INTERVAL_SECONDS: 60
+      WORKER_LEASE_TIMEOUT_MINUTES: 3
+      OBSERVATION_DEADLINE_MINUTES: 60
+      ENV: development
+    command: python -m stellarapi.monitoring.worker
 
 volumes:
   postgres_data:
