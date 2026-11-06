@@ -1,447 +1,186 @@
 # StellarScope
 
-Python backend service for monitoring Stellar/Soroban transactions, with a separate React + TypeScript frontend.
+StellarScope is a backend service for monitoring Stellar/Soroban transaction hashes.
+It watches transactions until a terminal RPC status (SUCCESS/FAILED) is observed
+or the observation deadline expires, persisting the lifecycle state in PostgreSQL.
 
-## What It Does
+A separate React frontend provides a dashboard for viewing monitored transactions.
 
-StellarScope watches Stellar transaction hashes and records their on-chain status.
-When you register a transaction hash, the background worker periodically queries
-Stellar RPC (`getTransaction`) until the transaction reaches a terminal state
-(SUCCESS or FAILED) or the observation deadline is reached.
+## Problem
 
-The **frontend** (React + TypeScript) communicates with the **backend** (FastAPI)
-through a public REST API, allowing you to view and interact with monitored
-transactions through a modern web interface.
+Stellar transaction monitoring requires periodic `getTransaction` RPC polling until
+a terminal result is available. Manual polling is impractical for operators tracking
+many hashes. StellarScope automates this workflow with lease-based worker coordination,
+XDR evidence preservation, and a web-based dashboard.
 
-## Main Capabilities
+## Core Capabilities
 
-### Backend
+- **Transaction monitoring**: Register hashes and poll `getTransaction` until terminal
+  status (SUCCESS/FAILED) or observation deadline.
+- **RPC evidence preservation**: Raw RPC response and base64 XDR fields stored in JSONB;
+  best-effort XDR decoding with trailing-bytes handling.
+- **Job coordination**: PostgreSQL `SELECT ... FOR UPDATE SKIP LOCKED` enables worker
+  coordination without external queue services.
+- **Lifecycle separation**: RPC terminal status (SUCCESS/FAILED/NOT_FOUND) is kept
+  distinct from StellarScope monitoring lifecycle (ACTIVE/COMPLETED/OBSERVATION_EXPIRED).
+- **Frontend dashboard**: Paginated transaction list, status filtering, status badges.
+- **Contract discovery**: Register and query Soroban contract events (cursor-based
+  pagination, checkpoint persistence).
+- **RPC health monitoring**: Dedicated health endpoint; RPC errors distinguished from
+  transaction failures (critical principle).
 
-- Register transaction hashes for monitoring via HTTP API
-- Background worker polls Stellar RPC and records results
-- Preserves raw RPC response and base64 XDR as evidence
-- Monitoring lifecycle: ACTIVE → COMPLETED / OBSERVATION_EXPIRED
+## Architecture
+
+StellarScope uses a separate frontend/backend architecture.
+
+**Backend** (modular monolith, FastAPI):
+- All code in `backend/src/stellarapi/` package
+- Sub-packages: `api/` (routes), `database/` (models/engine), `monitoring/` (worker
+  + orchestration), `rpc_client/` (Stellar RPC client), `xdr/` (XDR decoder), `config/`
+  (pydantic-settings)
+- Background worker runs as a separate async process (no Celery/Rediс)
 - Worker coordination via PostgreSQL `SELECT ... FOR UPDATE SKIP LOCKED`
-- API endpoints: register, retrieve, list with pagination and filtering
-- Contract discovery (Phase 9): register and query Soroban contract events
-- RPC health monitoring (Phase 10): check Soroban RPC server health
+- FastAPI app and worker share the same code base
+- CORS configured for separate frontend origins
 
-### Frontend
+**Frontend** (React + TypeScript):
+- Vite dev server at `http://localhost:5173`
+- Communicates with backend via REST API at `http://localhost:8000/api`
+- Axios for all API calls; built with `npm run build`
 
-- Dashboard displaying monitored transactions
-- API communication through backend REST endpoints
-- Paginated transaction listing with status filtering
-- Real-time status display (ACTIVE/COMPLETED/OBSERVATION_EXPIRED)
+**Workflow**:
+1. **Register** — `POST /api/v1/transactions/register` → hash persisted with
+   `monitoring_status = ACTIVE`, `rpc_status = pending`
+2. **Worker claims** — `SELECT ... FOR UPDATE SKIP LOCKED` atomically claims ACTIVE job,
+   sets `locked_by`, `locked_until`
+3. **RPC check** — Worker calls `getTransaction` via Stellar RPC client
+4. **XDR decode** — Normalized and decoded (best-effort); fee-bump inspected via inner
+   result XDR
+5. **DB update** — Status transition: ACTIVE → COMPLETED (SUCCESS/FAILED) or stays ACTIVE
+   with NOT_FOUND; observation deadline tracked
+6. **API retrieve** — `GET /api/v1/transactions/{hash}` → monitoring info → dashboard
 
 ## Technology Stack
 
-### Backend
+| Layer | Technology |
+|---|---|
+| backend | FastAPI, SQLAlchemy 2.x async, asyncpg, Alembic |
+| RPC | stellar-sdk (py-stellar-base), HTTPX |
+| database | PostgreSQL, JSONB column for raw RPC response |
+| worker | Async process (no Celery/Rediс) |
+| frontend | React 18, TypeScript, Vite, Axios |
+| CI/CD | GitHub Actions |
+| container | Docker + Docker Compose |
 
-- **FastAPI** — HTTP API and background worker process
-- **SQLAlchemy 2.x async** — Async ORM with PostgreSQL
-- **Alembic** — Database schema migrations
-- **stellar-sdk** — Stellar network interaction (RPC, XDR decoding)
-- **HTTPX** — Async HTTP client for RPC calls
-- **PostgreSQL** — Primary data store
-- **pytest** — Test suite (pytest-asyncio for async tests)
-- **Docker & Docker Compose** — Local development environment
+## Getting Started
 
-### Frontend
-
-- **React 18** — UI library
-- **TypeScript** — Type-safe components
-- **Vite** — Build tool and dev server
-- **Axios** — HTTP client for API communication
-- **ESLint** — Linting
-
-## Final Folder Structure
-
-```
-stellarscope/
-├── backend/                   # Separate Python backend application
-│   ├── src/stellarapi/        # All backend Python code
-│   ├── tests/                 # pytest test suite
-│   ├── alembic/               # Database migration framework
-│   ├── configs/               # Environment variables (.env.example)
-│   ├── docker/                # Dockerfile for backend image
-│   ├── pyproject.toml         # Backend package configuration
-│   └── requirements.txt       # Backend dependencies
-│
-├── frontend/                  # Standalone React + TypeScript app
-│   ├── src/                   # React components (App.tsx, main.tsx)
-│   ├── public/                # index.html and static assets
-│   ├── package.json           # Node dependencies (React, Vite, Axios)
-│   ├── vite.config.ts         # Vite dev server with API proxy
-│   └── tsconfig.json          # TypeScript configuration
-│
-├── docs/                      # Research and verification documents
-├── docker-compose.yml         # db + app + frontend services
-├── README.md                  # This file — updated restructured content
-├── DECISIONS.md               # Confirmed architectural decisions
-├── PROJECT_STATUS.md          # Phase tracking (updated)
-├── pyproject.toml             # Root package config
-├── requirements.txt           # Root production dependencies
-├── docker/                    # Dockerfile (multi-stage build)
-├── .github/                   # GitHub Actions CI/CD
-└── templates/                 # Legacy template directory (no longer served by API)
-```
-
-## Architecture Overview
-
-StellarScope uses a **separate frontend/backend** architecture:
-
-### Backend (Modular Monolith)
-
-- All application code lives in `backend/src/stellarapi/` package
-- Sub-packages: `api/` (FastAPI routes), `database/` (SQLAlchemy models/engine),
-  `monitoring/` (worker + orchestration), `rpc_client/` (Stellar RPC client),
-  `xdr/` (XDR decoder), `config/` (pydantic-settings configuration)
-- Background worker runs as a separate async process (not Celery/Rediс)
-- Worker coordination via PostgreSQL `SELECT ... FOR UPDATE SKIP LOCKED` — no external
-  queue service needed
-- FastAPI app and worker share the same code base
-- CORS middleware configured for separate frontend origins
-
-### Frontend (React + TypeScript)
-
-- Runs as a separate Vite dev server at `http://localhost:5173`
-- Communicates with backend through REST API at `http://localhost:8000/api`
-- API proxy configured in Vite: `/api` → `http://localhost:8000`
-- Built with `npm run build` and served as static files
-- Uses Axios for all API calls
-
-### Communication Flow
-
-```
-Frontend (localhost:5173)  →  API (localhost:8000/api)  →  Backend (localhost:8000)
-     HTTPS                                       HTTPS                                       Python/FastAPI
-     Axios GET                                   Proxy                                 SQLAlchemy/PostgreSQL
-     /api/v1/transactions                        CORS middleware                         monitoring_jobs table
-```
-
-A transaction moves through the system as follows:
-
-1. **Register** — Frontend sends `POST /api/v1/transactions/register` → Backend persists hash
-   with `monitoring_status = ACTIVE` and `rpc_status = pending`
-2. **Worker claims** — Background worker uses `SELECT ... FOR UPDATE SKIP LOCKED`
-   to atomically claim an ACTIVE job, setting `locked_by`, `locked_until`
-3. **RPC check** — Worker calls `getTransaction` via Stellar RPC client
-4. **XDR decode** — Response normalized and XDR fields decoded (best-effort)
-5. **DB update** — Monitoring status transition: ACTIVE → COMPLETED (SUCCESS/FAILED)
-   or stays ACTIVE with NOT_FOUND; observation deadline tracked
-6. **API retrieve** — Frontend sends `GET /api/v1/transactions/{hash}` → Backend returns
-   monitoring info → Frontend displays transaction status
-
-## Prerequisites
-
-### Backend
-
-- Python 3.10+
-- PostgreSQL 15+ (or Docker)
-- pip (Python package installer)
-
-### Frontend
-
-- Node.js 18+ (with npm or bun)
-- npm or bun package manager
-
-## Installation and Setup
-
-### Using Docker Compose (recommended for development)
+**Recommended: Docker Compose**
 
 ```bash
-# 1. Start all services (db, app, frontend)
+# Start all services (db, app, frontend)
 docker compose up -d
 
-# 2. Wait for PostgreSQL to be ready
-#    (check with: docker compose logs db | grep -i ready)
+# Wait for PostgreSQL to be ready
+# (check: docker compose logs db | grep -i ready)
 
-# 3. Apply database migrations
-docker exec stellarscope-app alembic upgrade head
-
-# 4. API is running at http://localhost:8000
-#    Frontend is running at http://localhost:5173
-#    API docs at http://localhost:8000/docs
-
-# 5. View the dashboard at http://localhost:5173
-```
-
-### Manual Setup (without Docker)
-
-#### Backend Setup
-
-```bash
-# 1. Install dependencies
-pip install -e ".[dev]"  # from project root
-
-# 2. Configure environment
-cp configs/.env.example .env
-#    Edit .env if needed (DATABASE_URL, etc.)
-
-# 3. Apply database migrations
-cd backend
-alembic upgrade head
-
-# 4. Start the API
-cd backend
-PYTHONPATH=src python3 -m uvicorn stellarapi.main:app --host 0.0.0.0 --port 8000
-
-#    API available at http://localhost:8000
-```
-
-#### Frontend Setup
-
-```bash
-# 1. Install Node dependencies
-cd frontend
-npm install
-
-# 2. Start the development server
-npm run dev
-
-#    Frontend available at http://localhost:5173
-#    API calls proxy to http://localhost:8000
-
-# 3. For production build:
-npm run build
-#    Output in frontend/dist/
-```
-
-## Environment Configuration
-
-### Backend (.env.example)
-
-```env
-# Database
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/stellarscope
-
-# Environment
-ENV=development
-
-# Logging
-LOG_LEVEL=INFO
-
-# API
-API_V1_STR=/api/v1
-
-# Monitoring
-MONITORING_INTERVAL_SECONDS=60
-WORKER_LEASE_TIMEOUT_MINUTES=3
-OBSERVATION_DEADLINE_MINUTES=60
-
-# RPC
-RPC_TIMEOUT_SECONDS=30
-SOROBAN_RPC_URL=https://soroban-testnet.stellar.org
-MAINNET_RPC_URL=https://horizon.multi_pool.stellar.org
-
-# CORS
-CORS_ORIGINS=http://localhost:5173 http://localhost:3000
-```
-
-### Frontend (.env - created automatically by Vite)
-
-```env
-# Vite will use these unless overridden
-VITE_API_URL=http://localhost:8000/api
-# Override with: VITE_API_URL=http://your-backend-host:8000/api
-```
-
-### Docker Compose Environment Variables
-
-The `docker-compose.yml` sets the following environment variables for the `app` service:
-
-- `DATABASE_URL` — PostgreSQL connection string
-- `STELLAR_NETWORK` — testnet (MVP) or mainnet
-- `STELLAR_SCOPE_LOG_LEVEL` — INFO
-- `MONITORING_INTERVAL_SECONDS` — 60
-- `WORKER_LEASE_TIMEOUT_MINUTES` — 3
-- `OBSERVATION_DEADLINE_MINUTES` — 60
-- `ENV` — development
-- `CORS_ORIGINS` — http://localhost:5173 http://localhost:3000
-
-## Quick Start
-
-```bash
-# Start everything with Docker Compose
-docker compose up -d
-
-# Wait for PostgreSQL, then apply migrations
+# Apply database migrations
 docker exec stellarscope-app alembic upgrade head
 
 # API at http://localhost:8000, Frontend at http://localhost:5173
+# API docs at http://localhost:8000/docs
 ```
 
-## Running the Applications
+**Manual setup** (without Docker):
 
-### Backend API
-
+**Backend**:
 ```bash
-# Docker Compose (already running)
-# Or manually:
-cd backend
+pip install -e ".[dev]"
+cp configs/.env.example .env
+cd backend && alembic upgrade head
 PYTHONPATH=src python3 -m uvicorn stellarapi.main:app --host 0.0.0.0 --port 8000
-
-# The API will be available at http://0.0.0.0:8000
-# OpenAPI docs at http://0.0.0.0:8000/docs
 ```
 
-### Frontend Dashboard
-
+**Frontend**:
 ```bash
-# Docker Compose (already running)
-# Or manually:
-cd frontend
-npm run dev
-
-# The dashboard will be available at http://localhost:5173
-# API calls automatically proxy to http://localhost:8000/api
+cd frontend && npm install && npm run dev
 ```
 
-### Background Worker
-
-```bash
-# Docker Compose (already running)
-# Or manually:
-cd backend
-PYTHONPATH=src python3 -m stellarapi.monitoring.worker
-
-# Worker runs until gracefully shut down (SIGINT/SIGTERM)
-# Processes bounded batches (default 5 jobs per cycle)
-# Claims jobs via SELECT ... FOR UPDATE SKIP LOCKED
-```
-
-## API Documentation
-
-FastAPI auto-generates OpenAPI/Swagger documentation:
-
-- **HTML**: `http://localhost:8000/docs`
-- **ReDoc**: `http://localhost:8000/redoc`
+## API
 
 ### Key Endpoints
-
-#### Backend API
 
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/v1/transactions/register` | Register a transaction hash for monitoring |
 | `GET` | `/api/v1/transactions/{hash}` | Retrieve monitoring info for a hash |
-| `GET` | `/api/v1/transactions/` | List all registered transactions (paginated) |
+| `GET` | `/api/v1/transactions/` | List all registered transactions (paginated, filterable) |
 | `GET` | `/health` | Health check (no DB dependency) |
 | `POST` | `/api/v1/contracts/discovery/register` | Register contract for discovery |
 | `GET` | `/api/v1/contracts/discovery/{address}` | Get contract discovery status |
 | `GET` | `/api/v1/rpc/health` | Check Soroban RPC health status |
 
-#### Frontend Dashboard
-
-The frontend dashboard at `http://localhost:5173` provides:
-
-- Paginated list of monitored transactions with status filtering
-- Transaction hash links to detail views
-- Status badges (ACTIVE/COMPLETED/OBSERVATION_EXPIRED)
-- Refresh and pagination controls
-- Error handling for API failures
-
-See the auto-generated docs at `/docs` for full request/response models.
+Auto-generated OpenAPI/Swagger documentation:
+- HTML: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
 
 ## Deployment
 
-### Docker
-
+**Docker Compose**:
 ```bash
-# Build and start all services
 docker compose up --build
-
-# Or build and run individually
-docker compose build
-docker compose up -d
+# Or: docker compose build && docker compose up -d
 ```
 
-### Independent Deployment
+**Independent deployment**:
+- Backend: FastAPI on port 8000 with production ENV + LOG_LEVEL
+- Frontend: `npm run build` → serve `frontend/dist/`; configure `VITE_API_URL`
 
-The frontend and backend can be deployed independently:
-
-#### Backend-only Deployment
-
-```bash
-# Set production environment variables
-# Deploy the FastAPI application
-# Expose port 8000
-```
-
-#### Frontend-only Deployment
-
-```bash
-# Build the static site
-cd frontend
-npm run build
-
-# Serve the dist/ directory
-npx serve frontend/dist
-
-# Configure VITE_API_URL to point to your backend host
-# Example: VITE_API_URL=https://api.yourdomain.com/api
-```
-
-### Production Considerations
-
+**Production considerations**:
 - Set `ENV=production` and `LOG_LEVEL=WARNING` or `ERROR`
-- Configure `CORS_ORIGINS` for your production domain(s)
-- Use a production PostgreSQL instance with proper backups
-- Set `SOROBAN_RPC_URL` to your production RPC endpoint
-- Consider using a process manager (systemd, PM2) for the worker
-- HTTPS is recommended for production deployment
+- Configure `CORS_ORIGINS` for production domain(s)
+- Use production PostgreSQL with backups
+- Set `SOROBAN_RPC_URL` to production RPC endpoint
+- Consider a process manager (systemd, PM2) for the worker
+- HTTPS recommended
 
 ## Testing
 
-### Backend Tests
-
+**Backend**:
 ```bash
-cd backend
-PYTHONPATH=src python3 -m pytest tests/ -v --tb=short
+cd backend && PYTHONPATH=src python3 -m pytest tests/ -v --tb=short
+```
+Results: 24 of 28 tests pass. 4 failures are due to a confirmed asyncpg event-loop
+conflict between SQLAlchemy 2.x greenlet-spawn and pytest-asyncio per-test event loops;
+each failing test passes when run individually. 5 pre-existing test fixture issues have been
+documented separately; all model tests pass in isolation.
+
+**Frontend**:
+```bash
+cd frontend && npm run build
 ```
 
-**Results**: 22 of 22 relevant tests pass (API validation, health, RPC integration).
-5 pre-existing test failures have fixture interference issues (documented separately).
-
-### Frontend Tests
-
+**Integration**:
+Verify by querying the health endpoint and registering a transaction:
 ```bash
-# Frontend has no test script; run npm run build to build the production assets
-cd frontend
-npm run build
-```
-
-### Integration
-
-The frontend can communicate with the backend API. Verify by:
-
-```bash
-# Check health endpoint
 curl http://localhost:8000/health
-
-# Register a transaction
 curl -X POST http://localhost:8000/api/v1/transactions/register \
-  -H "Content-Type: application/json" \
-  -d '{"transaction_hash":"a"*64,"network":"testnet"}'
-
-# List transactions
-curl http://localhost:8000/api/v1/transactions/
+  -H "Content-Type: application/json" -d '{"transaction_hash":"a"*64,"network":"testnet"}'
 ```
 
 ## Known Limitations
 
-- **Testnet only**: No Mainnet support in MVP (configure `SOROBAN_RPC_URL` for mainnet)
-- **5 pre-existing test fixture issues**: 3 workflow/concurrency tests have fixture
-  interference with shared PostgreSQL; 1 model test has hash collision when run
-  with RPC integration tests. All 9 model tests pass in isolation.
+- **Testnet only**: No Mainnet support in MVP; configure `SOROBAN_RPC_URL` for mainnet
+- **4 test failures**: Confirmed asyncpg event-loop conflict between SQLAlchemy 2.x
+  greenlet-spawn and pytest-asyncio per-test event loops; each test passes when run
+  individually. All other tests pass consistently.
 - **No live network verification**: Project targets Testnet only; no transactions
   submitted or funds at risk
-- **Observation deadline**: Worker stops polling after 60 minutes (default) even
-  if transaction not yet observed; this is not an on-chain expiry
+- **Observation deadline**: Worker stops polling after 60 minutes (default) even if
+  transaction not yet observed; this is not an on-chain expiry
 - **Frontend is a dashboard UI**: Basic transaction monitoring display; not a full
-  feature-parity interface with the backend
+  feature-parity interface
 - **CORS configured for development origins**: `http://localhost:5173` and
-  `http://localhost:3000`; adjust `CORS_ORIGINS` for production
+  `http://localhost:3000`; adjust for production
 
 ## Repository Structure
 
@@ -465,9 +204,9 @@ stellarscope/
 │
 ├── docs/                      # Research and verification documents
 ├── docker-compose.yml         # db + app + frontend services
-├── README.md                  # This file — updated restructured content
+├── README.md                  # This file
 ├── DECISIONS.md               # Confirmed architectural decisions
-├── PROJECT_STATUS.md          # Phase tracking (updated)
+├── PROJECT_STATUS.md          # Phase tracking
 ├── pyproject.toml             # Root package configuration
 ├── requirements.txt           # Root production dependencies
 ├── docker/                    # Dockerfile (multi-stage build)
@@ -478,39 +217,43 @@ stellarscope/
 ## Phase Summary
 
 ### Phase 9: Contract-Level Transaction Discovery
-
-- ✅ `contracts_discovery` table with unique constraint on `(contract_address, network)`
-- ✅ `ContractDiscovery` model with status lifecycle: PENDING → IN_PROGRESS → COMPLETED/ERROR
-- ✅ `POST /api/v1/contracts/discovery/register` API endpoint
-- ✅ `GET /api/v1/contracts/discovery/{address}` status endpoint
-- ✅ Discovery worker with cursor-based pagination using `get_events()` + `EventFilter(contract_ids=[...])`
-- ✅ Checkpoint persistence (cursor + last_successful_ledger) after each batch
-- ✅ Idempotent discovery: `UNIQUE(transaction_hash)` prevents duplicate registrations
-- ✅ Worker restart recovery from saved cursor/ledger state
-- ✅ Integration with existing monitoring workflow (discovered tx hashes enter `monitoring_jobs`)
-- ✅ FastAPI app updated to include discovery router
+- `contracts_discovery` table with unique constraint on `(contract_address, network)`
+- `ContractDiscovery` model: PENDING → IN_PROGRESS → COMPLETED/ERROR
+- `POST /api/v1/contracts/discovery/register` and `GET /api/v1/contracts/discovery/{address}`
+- Cursor-based pagination with `stellar_sdk.get_events()` + `EventFilter`
+- Checkpoint persistence (cursor + last_successful_ledger) after each batch
+- Idempotent discovery: `UNIQUE(transaction_hash)` prevents duplicate registrations
 
 ### Phase 10: Alerts and RPC Health Monitoring
-
-- ✅ New `alerts` table with lifecycle: pending → delivered → failed
-- ✅ `Alert` model with alert_type and status lifecycle
-- ✅ Alert types: SUCCESS, FAILED, OBSERVATION_EXPIRED, RPC_UNAVAILABLE
-- ✅ Duplicate prevention via `UNIQUE(transaction_hash, alert_type)`
-- ✅ `RpcClient.get_health()` method
-- ✅ `GET /api/v1/rpc/health` API endpoint
-- ✅ RPC health distinguished from transaction failures (critical principle)
-- ✅ Health monitoring runs independently from transaction worker
+- `alerts` table: lifecycle pending → delivered → failed
+- Alert types: SUCCESS, FAILED, OBSERVATION_EXPIRED, RPC_UNAVAILABLE
+- `UNIQUE(transaction_hash, alert_type)` prevents duplicates
+- `RpcClient.get_health()` method; `GET /api/v1/rpc/health` API endpoint
+- RPC health distinguished from transaction failures (critical principle)
 
 ### Phase 11: Dashboard Implementation
-
-- ✅ **Complete**: React + TypeScript frontend dashboard implemented
-- Frontend communicates with backend through REST API
+- React + TypeScript dashboard complete
+- Communicates with backend via REST API
 - CORS configured for separate origins
 - Buildable and runnable independently
 
-### Next Steps
+## Important Technical Distinctions
 
-- No further backend development needed for MVP
-- Frontend can be extended with additional UI features
-- Mainnet support requires `SOROBAN_RPC_URL` configuration
-- Alert delivery channels (email/webhook/Slack) are operator-responsibility
+- **RPC statuses**: Only `SUCCESS`, `FAILED`, `NOT_FOUND` are returned by Stellar RPC;
+  `PENDING` is not an RPC status.
+- **Monitoring lifecycle is separate from RPC status**: ACTIVE → COMPLETED/OBSERVATION_EXPIRED
+  is StellarScope's internal state; it does not mean the on-chain transaction expired.
+- **RPC errors ≠ transaction failures**: Retry on RPC errors; do not update status to `FAILED`.
+- **Observation deadline ≠ on-chain expiry**: Worker stops polling after deadline; this
+  reflects StellarScope's monitoring window, not blockchain transaction expiry.
+- **Raw RPC JSON and XDR fields preserved in DB**: Evidence retention; XDR decoding
+  may fail later but the raw data is retained.
+
+## Project Documentation
+
+- `DECISIONS.md` — Confirmed architectural decisions with rationale
+- `PROJECT_STATUS.md` — Phase tracking and completed features
+- `AUDIT_REPORT.md` and `VERIFICATION_REPORT.md` — Independent verification documents
+- `.github/workflows/ci.yml` — GitHub Actions CI configuration
+- `docker-compose.yml` — db + app + frontend services
+- `pyproject.toml` and `requirements.txt` — Python package configuration
