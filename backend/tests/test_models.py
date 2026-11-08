@@ -81,6 +81,7 @@ async def test_unique_transaction_hash_constraint(session) -> None:
 
     with pytest.raises(IntegrityError):
         await session.commit()
+    await session.rollback()
 
     # The second job should not be in the database
     result = await session.execute(

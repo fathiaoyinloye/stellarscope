@@ -71,12 +71,12 @@ async def test_lease_expiry_recovery() -> None:
         )
 
     # Claim the job with a 1-second lease
-    claimed = await claim_job(async_engine, lease_timeout_seconds=1)
+    claimed = await claim_job(async_engine, RpcClient(), lease_timeout_seconds=1)
     assert claimed is not None, "Should be able to claim the job"
     assert claimed["locked_by"] is not None
 
     # Before lease expires, another claim should fail (locked_until is in the future)
-    still_claimed = await claim_job(async_engine, lease_timeout_seconds=1)
+    still_claimed = await claim_job(async_engine, RpcClient(), lease_timeout_seconds=1)
     assert still_claimed is None, (
         "Before lease expiry, another worker should not be able to claim the same job"
     )
@@ -85,7 +85,7 @@ async def test_lease_expiry_recovery() -> None:
     await asyncio.sleep(2)  # Wait just over 1 second
 
     # Now another worker should be able to claim it
-    newly_claimed = await claim_job(async_engine, lease_timeout_seconds=1)
+    newly_claimed = await claim_job(async_engine, RpcClient(), lease_timeout_seconds=1)
     assert newly_claimed is not None, "After lease expiry, another worker should be able to claim"
     assert newly_claimed["transaction_hash"] == claimed["transaction_hash"]
 

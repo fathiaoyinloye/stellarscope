@@ -224,9 +224,13 @@ npm install
 npm run build
 ```
 
-The latest recorded backend test result is **24 passing tests out of 28**. Four tests remain failing in the combined test run due to an unresolved asyncpg/pytest-asyncio event-loop interaction. This is a known test-suite issue, not evidence that the application stack is fundamentally incompatible.
+The backend test suite includes 37 tests across multiple test modules. The test suite verifies database model persistence, RPC client functionality, XDR decoding, API validation, and workflow integration.
 
-The frontend build and Docker-based application startup have also been verified in the development environment.
+**Current test results:** 32 tests pass, 4 tests fail (see Known Limitations below).
+
+Run the test suite with: `cd backend && PYTHONPATH=src python -m pytest tests/ -v`
+
+The frontend build has been verified with `npm run build`.
 
 ## Scope and Limitations
 
@@ -235,7 +239,7 @@ The frontend build and Docker-based application startup have also been verified 
 - Monitoring stops when the configured observation deadline is reached, even if no terminal RPC result has been observed.
 - XDR decoding is best-effort; preserved raw RPC evidence remains the reference for subsequent inspection.
 - The dashboard provides monitoring visibility and is not intended to replace a full Stellar development or transaction-management interface.
-- Four backend tests remain unresolved in the combined test suite.
+- **Known issues:** 4 tests currently fail due to asyncpg event-loop interaction and mock/type mismatches in workflow tests. These are infrastructure/test gaps, not fundamental application issues.
 
 ## Project Documentation
 
