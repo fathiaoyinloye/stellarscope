@@ -23,11 +23,10 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-        # Set vital postgresql so the db container is useful
         shm_size: 1gb
 
     env:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/stellarscope
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/stellarscope
       STELLAR_NETWORK: testnet
       STELLAR_SCOPE_LOG_LEVEL: INFO
       MONITORING_INTERVAL_SECONDS: 60
@@ -59,17 +58,20 @@ jobs:
           cd frontend
           npm ci
 
+      - name: Wait for PostgreSQL readiness
+        run: |
+          until PGPASSWORD=postgres psql -U postgres -h localhost -d stellarscope -c 'SELECT 1' > /dev/null 2>&1; do
+            sleep 2
+          done
+
       - name: Run database migrations
         run: |
           alembic upgrade head
-        # Wait for PostgreSQL to be ready
-        until PGPASSWORD=postgres psql -U postgres -d stellarscope -c 'SELECT 1' > /dev/null 2>&1; do
-          sleep 2
-        done
 
       - name: Run backend tests
         run: |
-          pytest -v
+          cd backend
+          PYTHONPATH=src pytest tests/ -v
 
       - name: Upload test results
         if: always()
@@ -81,4 +83,4 @@ jobs:
       - name: Build frontend production assets
         run: |
           cd frontend
-          npm ci
+          npm run build
