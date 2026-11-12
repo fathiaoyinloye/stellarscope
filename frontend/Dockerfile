@@ -1,16 +1,20 @@
-FROM node:18-alpine
+# Build the static frontend assets
+FROM node:20-alpine AS build
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
-COPY index.html .
-COPY public ./public
-COPY src ./src
-COPY tsconfig.json .
-COPY vite.config.ts .
+COPY . .
+RUN npm run build
 
-EXPOSE 5173
+# Serve the production build through nginx
+FROM nginx:alpine
 
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

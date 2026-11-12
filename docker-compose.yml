@@ -79,5 +79,22 @@ services:
       ENV: development
     command: python -m stellarapi.monitoring.worker
 
+  discovery-worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: stellarscope-discovery-worker
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/stellarscope
+      STELLAR_NETWORK: testnet
+      STELLAR_SCOPE_LOG_LEVEL: INFO
+      DISCOVERY_INTERVAL_SECONDS: 300
+      ENV: development
+    command: python -m stellarapi.monitoring.discovery_worker
+
 volumes:
   postgres_data:

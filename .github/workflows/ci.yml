@@ -19,7 +19,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
         ports:
           - "5432:5432"
-        options: --shm-size 1gb
+        options: --shm-size=1gb
 
     env:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/stellarscope
@@ -70,12 +70,9 @@ jobs:
           cd backend
           PYTHONPATH=src pytest tests/ -v
 
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: backend/tests
+      - name: Lint backend
+        run: |
+          ruff check backend/src backend/tests
 
       - name: Build frontend production assets
         run: |

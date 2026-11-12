@@ -85,13 +85,15 @@ async def perform_monitoring_check(
 
     The function:
     1. Fetches the current job state from the database.
-    2. Calls ``rpc_client.get_transaction(transaction_hash)`` to get the
-       latest RPC response.
-    3. Normalises and decodes the response (result XDR, meta XDR, diagnostic
+    2. If the observation deadline has passed, transitions the job to
+       ``OBSERVATION_EXPIRED`` without making an RPC call.
+    3. Otherwise calls ``rpc_client.get_transaction(transaction_hash)`` to get
+       the latest RPC response.
+    4. Normalises and decodes the response (result XDR, meta XDR, diagnostic
        events) using the best‑effort XDR decoder.
-    4. Updates the ``monitoring_jobs`` table with the new RPC status,
+    5. Updates the ``monitoring_jobs`` table with the new RPC status,
        decoded evidence, and lifecycle state.
-    5. Schedules the ``next_check_at`` based on the outcome.
+    6. Schedules the ``next_check_at`` based on the outcome.
 
     Invariants preserved
     --------------------
@@ -125,7 +127,8 @@ async def perform_monitoring_check(
     Returns:
         ``dict`` with the following keys:
         - ``job_id``: the database id
-        - ``rpc_status``: ``"SUCCESS"`` / ``"FAILED"`` / ``"NOT_FOUND"``
+        - ``rpc_status``: ``"SUCCESS"`` / ``"FAILED"`` / ``"NOT_FOUND"``, or
+          ``None`` when the job expired before an RPC call was made
         - ``monitoring_status``: ``"ACTIVE"`` / ``"COMPLETED"`` /
           ``"OBSERVATION_EXPIRED"``
         - ``next_check_at``: optional earliest next poll timestamp
@@ -149,6 +152,55 @@ async def perform_monitoring_check(
 
     job_created_at = job.created_at
     job_monitoring_status = job.monitoring_status
+
+    # ------------------------------------------------------------------
+    # Step 0b: Observation deadline check (before spending an RPC call)
+    # ------------------------------------------------------------------
+    # Per DECISIONS.md §68, the observation deadline is the point at which
+    # StellarScope stops monitoring — it is *not* an on-chain expiry.  Once
+    # the deadline has passed without a terminal result, transition the job
+    # to ``OBSERVATION_EXPIRED`` immediately and do not poll the RPC again.
+    now = datetime.now(timezone.utc)
+    observation_deadline_seconds = (
+        getattr(settings, "OBSERVATION_DEADLINE_MINUTES", 60) * 60
+    )
+    deadline_passed = (
+        job_created_at is not None
+        and isinstance(job_created_at, datetime)
+        and job_monitoring_status == "ACTIVE"
+        and now >= job_created_at + timedelta(seconds=observation_deadline_seconds)
+    )
+
+    if deadline_passed:
+        logger.info(
+            "Observation deadline reached for job=%s hash=%s — expiring without RPC",
+            job_id,
+            transaction_hash,
+        )
+        async with async_engine.begin() as conn:
+            await conn.execute(
+                text(
+                    """
+                    UPDATE monitoring_jobs
+                    SET monitoring_status = 'OBSERVATION_EXPIRED',
+                        locked_by = NULL,
+                        locked_until = NULL,
+                        next_check_at = :next_check_at,
+                        updated_at = now()
+                    WHERE id = :job_id
+                      AND monitoring_status = 'ACTIVE'
+                    """
+                ),
+                {"job_id": job_id, "next_check_at": now},
+            )
+
+        return {
+            "job_id": job_id,
+            "rpc_status": None,
+            "monitoring_status": "OBSERVATION_EXPIRED",
+            "next_check_at": now,
+            "updated_raw_rpc_response": None,
+        }
 
     # ------------------------------------------------------------------
     # Step 1: Fetch the latest transaction from the RPC
@@ -188,19 +240,13 @@ async def perform_monitoring_check(
     decoded_result: Optional[TransactionResultInfo] = None
 
     if fee_bump:
-        # Fee-bump: inspect inner result XDR rather than assuming normal structure.
-        # Prefer the fresh inner_result_xdr from the RPC response over the stored
-        # result_xdr.  The raw RPC response from Soroban may embed the inner result
-        # XDR; if not available we fall back to the outer result_xdr.
-        inner_result_xdr = (
-            new_raw_rpc_response.get("inner_result_xdr")
-            or rpc_result.raw_rpc_response.get("inner_result_xdr")
-            or None
-        )
+        # Fee-bump: the RPC only returns the outer TransactionResult XDR.  The
+        # inner result is embedded inside it (InnerTransactionResultPair), so
+        # let the decoder extract it rather than looking for a non-existent
+        # ``inner_result_xdr`` field in the RPC response.
         try:
             decoded_result = decode_fee_bump_result(
                 result_xdr=rpc_result.result_xdr or result_xdr or "",
-                inner_result_xdr=inner_result_xdr or None,
             )
         except (Exception) as exc:
             logger.warning(
@@ -266,48 +312,10 @@ async def perform_monitoring_check(
     #   response; do not attempt to decode result fields.
     # - Do NOT overwrite a previously recorded terminal result (COMPLETED) with
     #   a later NOT_FOUND.
-    # - OBSERVATION_EXPIRED: if the observation deadline has been reached
-    #   without a terminal result, transition to OBSERVATION_EXPIRED.
+    # - OBSERVATION_EXPIRED was already handled before the RPC call above:
+    #   once the deadline passes, the job is expired without polling again.
 
-    # Check observation deadline: if the job has been monitored for too long
-    # without a terminal result, transition to OBSERVATION_EXPIRED.
-    observation_deadline_seconds = getattr(
-        settings, "OBSERVATION_DEADLINE_MINUTES", 60
-    ) * 60
-
-    # Determine if observation deadline has been reached.
-    # We use the job's created_at as the start of monitoring.
-    # If the job was created more than the deadline ago and is still ACTIVE
-    # with a non-terminal rpc_status, expire it.
-    deadline_passed = False
-    if job_created_at is not None and isinstance(job_created_at, datetime):
-        deadline_time = job_created_at + timedelta(
-            seconds=observation_deadline_seconds
-        )
-        if datetime.now(timezone.utc) >= deadline_time:
-            # Check that we're not already in a terminal state
-            if job_monitoring_status not in ("COMPLETED", "OBSERVATION_EXPIRED"):
-                deadline_passed = True
-
-    if deadline_passed:
-        # Transition to OBSERVATION_EXPIRED regardless of RPC result
-        new_rpc_status = status
-        new_monitoring_status = "OBSERVATION_EXPIRED"
-        new_failure_reason = None
-        new_next_check = None  # No further polling needed
-    elif status.value == "NOT_FOUND":
-        # NOT_FOUND: do not decode result fields; preserve raw response.
-        # If the job is currently ACTIVE, transition to... we keep it ACTIVE
-        # but record the NOT_FOUND.  Per the spec, NOT_FOUND is not an error
-        # and we continue polling until a terminal state or observation deadline.
-        new_rpc_status = status
-        new_monitoring_status = "ACTIVE"  # continue polling
-        new_failure_reason = None  # NOT_FOUND is not an error per se
-        new_next_check = datetime.now(timezone.utc) + timedelta(
-            seconds=settings.MONITORING_INTERVAL_SECONDS
-        )
-
-    elif status.value in ("SUCCESS", "FAILED"):
+    if status.value in ("SUCCESS", "FAILED"):
         # Terminal RPC status.  If the job is currently ACTIVE, transition
         # to COMPLETED.  If already COMPLETED, do NOT overwrite (enforced by
         # the caller / DB constraint).
@@ -316,17 +324,27 @@ async def perform_monitoring_check(
         new_failure_reason = (
             decoded_result.result_code if decoded_result else None
         )
-        # Set next_check_at to current time - no further polling needed since
-        # the status is terminal, but the column is NOT NULL so we must provide
-        # a value.  The WHERE monitoring_status = 'ACTIVE' clause in the UPDATE
-        # will prevent any stale row from being updated.
-        new_next_check = datetime.now(timezone.utc)
+        # The column is NOT NULL, so store the current time even though no
+        # further polling is needed.  The WHERE monitoring_status = 'ACTIVE'
+        # clause in the UPDATE prevents any stale row from being updated.
+        new_next_check = now
+
+    elif status.value == "NOT_FOUND":
+        # NOT_FOUND: do not decode result fields; preserve raw response.
+        # Keep the job ACTIVE and continue polling until a terminal state or
+        # the observation deadline (handled at the start of the next check).
+        new_rpc_status = status
+        new_monitoring_status = "ACTIVE"  # continue polling
+        new_failure_reason = None  # NOT_FOUND is not an error per se
+        new_next_check = now + timedelta(
+            seconds=settings.MONITORING_INTERVAL_SECONDS
+        )
 
     else:
         # Should not happen given the type system, but fallback.
         new_rpc_status = status
         new_monitoring_status = "ACTIVE"
-        new_next_check = None
+        new_next_check = now
 
     # ------------------------------------------------------------------
     # Step 4: Persist the observation to the database
@@ -363,10 +381,10 @@ async def perform_monitoring_check(
                     "rpc_status": new_rpc_status.value,
                     "monitoring_status": new_monitoring_status,
                     "raw_rpc_response": json.dumps(new_raw_rpc_response),
-                    "envelope_xdr": envelope_xdr or rpc_result.envelope_xdr,
+                    "envelope_xdr": rpc_result.envelope_xdr or envelope_xdr,
                     "result_xdr": rpc_result.result_xdr or result_xdr,
-                    "result_meta_xdr": result_meta_xdr or rpc_result.result_meta_xdr,
-                    "ledger": ledger if ledger is not None else rpc_result.ledger,
+                    "result_meta_xdr": rpc_result.result_meta_xdr or result_meta_xdr,
+                    "ledger": rpc_result.ledger if rpc_result.ledger is not None else ledger,
                     "failure_reason": new_failure_reason,
                     "job_id": job_id,
                     "next_check_at": new_next_check,

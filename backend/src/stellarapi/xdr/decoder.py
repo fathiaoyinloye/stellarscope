@@ -30,7 +30,7 @@ import logging
 from typing import Any, Optional
 
 import stellar_sdk
-from stellar_sdk.xdr import TransactionResultResult
+from stellar_sdk.xdr import TransactionResultCode
 
 from stellarapi.rpc_client import (
     DiagnosticEventInfo,
@@ -243,6 +243,49 @@ def decode_diagnostic_events(
     return results
 
 
+def _extract_inner_result_info(decoded_outer: Any) -> Optional[TransactionResultInfo]:
+    """Extract the inner transaction result from a fee-bump outer result.
+
+    Soroban RPC returns a single outer ``TransactionResult`` XDR for fee-bump
+    transactions.  When the outer code is ``txFEE_BUMP_INNER_SUCCESS`` or
+    ``txFEE_BUMP_INNER_FAILED``, the actual inner result is embedded in
+    ``inner_result_pair.result`` (an ``InnerTransactionResult``).  This helper
+    recovers it so callers do not need a separate ``inner_result_xdr`` field
+    (which the RPC does not provide).
+    """
+    try:
+        outer_result = getattr(decoded_outer, "result", None)
+        if outer_result is None:
+            return None
+
+        code = getattr(outer_result, "code", None)
+        if code not in (
+            TransactionResultCode.txFEE_BUMP_INNER_SUCCESS,
+            TransactionResultCode.txFEE_BUMP_INNER_FAILED,
+        ):
+            return None
+
+        pair = getattr(outer_result, "inner_result_pair", None)
+        if pair is None:
+            return None
+
+        inner = getattr(pair, "result", None)
+        if inner is None:
+            return None
+
+        inner_result = getattr(inner, "result", None)
+        inner_code = getattr(inner_result, "code", None) if inner_result else None
+        fee_charged = getattr(inner, "fee_charged", None)
+
+        return TransactionResultInfo(
+            result_code=str(inner_code) if inner_code is not None else None,
+            fee_charged=str(fee_charged) if fee_charged else None,
+        )
+    except Exception as exc:
+        logger.warning("Failed to extract fee-bump inner result: %s", exc)
+        return None
+
+
 def decode_fee_bump_result(
     result_xdr: str, inner_result_xdr: Optional[str] = None
 ) -> Optional[TransactionResultInfo]:
@@ -293,6 +336,34 @@ def decode_fee_bump_result(
             logger.info("Decoded fee‑bump transaction result using inner XDR")
             return merged
 
+    # No explicit inner XDR was supplied.  Recover the inner result from the
+    # outer XDR (the RPC does not return a separate inner_result_xdr field).
+    decoded_outer = _decode_xdr_bytes(result_xdr)
+    inner = (
+        _extract_inner_result_info(decoded_outer)
+        if decoded_outer is not None
+        else None
+    )
+    if inner is not None:
+        merged = TransactionResultInfo(
+            result_code=inner.result_code or outer.result_code,
+            fee_charged=inner.fee_charged or outer.fee_charged,
+            home_domain=outer.home_domain,
+            low_threshold=outer.low_threshold,
+            medium_threshold=outer.medium_threshold,
+            high_threshold=outer.high_threshold,
+            last_price_ratio=outer.last_price_ratio,
+            claimable_balance=outer.claimable_balance,
+            data_name=outer.data_name,
+            last_ledger=outer.last_ledger,
+            signer_domain=outer.signer_domain,
+            signer_weight=outer.signer_weight,
+        )
+        logger.info(
+            "Decoded fee‑bump transaction result from embedded inner XDR"
+        )
+        return merged
+
     # Fall back to treating it as a normal transaction result.
-    logger.info("Decoded transaction result (non fee‑bump fallback) via outer XDR")
+    logger.info("Decoded transaction result (non fee-bump fallback) via outer XDR")
     return outer

@@ -44,7 +44,7 @@ class ContractRegisterRequest(BaseModel):
         return v
 
 
-router = APIRouter(prefix="/v1/contracts/discovery", tags=["contract-discovery"])
+router = APIRouter(prefix="/api/v1/contracts/discovery", tags=["contract-discovery"])
 
 
 @router.post("/register", status_code=201)

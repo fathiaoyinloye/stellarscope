@@ -31,8 +31,7 @@ from typing import Optional
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 
-from stellar_sdk import SorobanServer
-from stellar_sdk.soroban_rpc import EventFilter, GetEventsRequest
+from stellar_sdk.soroban_rpc import EventFilter
 
 from stellarapi.config.settings import settings
 from stellarapi.database.engine import engine as async_engine
@@ -91,9 +90,8 @@ async def fetch_events_page(
     -------
     dict
         The raw get_events() response dict containing:
-        - records: list of EventInfo objects (as dicts)
+        - events: list of EventInfo objects
         - cursor: pagination cursor for the next page (may be None)
-        - _embedded: additional metadata
 
     Raises
     ------
@@ -102,27 +100,26 @@ async def fetch_events_page(
     """
     # Create RPC client and get the SorobanServer instance
     rpc_client = RpcClient()
-    server = rpc_client.server  # SorobanServer instance
 
-    # Build the EventFilter with the contract address
-    event_filter = EventFilter(contract_ids=[contract_address])
-
-    # Build the request
-    request = GetEventsRequest(
-        filters=[event_filter],
-        cursor=cursor,
-        start_ledger=start_ledger,
-        end_ledger=end_ledger,
-        limit=limit,
-    )
-
-    # Call the RPC
     try:
-        response = await server.get_events(request)
+        server = rpc_client.server  # SorobanServer instance
+
+        # Build the EventFilter with the contract address
+        event_filter = EventFilter(contract_ids=[contract_address])
+
+        # get_events() is synchronous in stellar-sdk; run it in a thread so it
+        # does not block the async event loop.
+        response = await asyncio.to_thread(
+            server.get_events,
+            start_ledger=start_ledger,
+            end_ledger=end_ledger,
+            filters=[event_filter],
+            cursor=cursor,
+            limit=limit,
+        )
         return {
-            "records": response.records if hasattr(response, "records") else [],
+            "events": response.events if hasattr(response, "events") else [],
             "cursor": response.cursor if hasattr(response, "cursor") else None,
-            "_embedded": getattr(response, "_embedded", {}),
         }
     except Exception as exc:
         # Wrap as RpcCommunicationError per project conventions
@@ -130,8 +127,7 @@ async def fetch_events_page(
             f"Stellar RPC get_events() failed for contract {contract_address}: {exc}"
         )
     finally:
-        # Clean up - the RpcClient creates a new one each time, no persistent state
-        pass
+        await rpc_client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +207,7 @@ async def process_events_page(
     start_ledger: Optional[int] = None,
     end_ledger: Optional[int] = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    network: str = "testnet",
 ) -> dict:
     """Process one page of events and register discovered transactions.
 
@@ -259,7 +256,7 @@ async def process_events_page(
             "error": str(exc),
         }
 
-    records = response.get("records", [])
+    records = response.get("events", [])
     new_cursor = response.get("cursor", None)
     new_last_ledger = (
         end_ledger
@@ -293,7 +290,7 @@ async def process_events_page(
             continue
 
         # Try to register the transaction hash
-        was_new = await register_discovered_transaction(transaction_hash, "testnet")
+        was_new = await register_discovered_transaction(transaction_hash, network)
         if was_new:
             registered_count += 1
         else:
@@ -412,6 +409,7 @@ async def discover_contract_events(
                     start_ledger=start_ledger,
                     end_ledger=None,  # no upper bound for MVP
                     batch_size=DEFAULT_BATCH_SIZE,
+                    network=network,
                 )
 
                 if result.get("error"):
@@ -611,16 +609,43 @@ async def discovery_worker_cycle(
 # ---------------------------------------------------------------------------
 
 
+async def run_discovery_worker(
+    interval_seconds: Optional[int] = None,
+) -> None:
+    """Run the discovery worker until the process is stopped.
+
+    Each cycle processes every contract whose status is ``PENDING`` or
+    ``IN_PROGRESS``.  The worker sleeps between cycles so it does not hammer
+    the RPC endpoint when there is no work to do.
+
+    Args:
+        interval_seconds: seconds to wait between cycles.  Defaults to
+            ``settings.DISCOVERY_INTERVAL_SECONDS`` (300 seconds).
+    """
+    if interval_seconds is None:
+        interval_seconds = getattr(settings, "DISCOVERY_INTERVAL_SECONDS", 300)
+
+    logger.info(
+        "StellarScope discovery worker starting (interval=%s seconds)",
+        interval_seconds,
+    )
+
+    while True:
+        try:
+            result = await discovery_worker_cycle()
+            logger.info("Discovery worker cycle complete: %s", result)
+        except Exception:
+            # A failure in one cycle must not terminate the worker.
+            logger.exception("Discovery worker cycle failed")
+        await asyncio.sleep(interval_seconds)
+
+
 def main() -> None:
     """Entry point for the discovery worker.
 
-    Runs one cycle of the discovery worker, processing all contracts
-    that are pending or in progress.
+    Runs the discovery worker loop indefinitely; use SIGINT/SIGTERM to stop.
     """
-    import asyncio
-
-    result = asyncio.run(discovery_worker_cycle())
-    print(f"Discovery worker cycle complete: {result}")
+    asyncio.run(run_discovery_worker())
 
 
 if __name__ == "__main__":

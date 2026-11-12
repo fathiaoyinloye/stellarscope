@@ -41,7 +41,7 @@ from stellarapi.xdr.decoder import (
     decode_transaction_meta,
     decode_transaction_result,
 )
-from tests.test_models import TEST_DATABASE_URL  # just to ensure db is set up
+# TEST_DATABASE_URL imported locally; the real DB setup is handled by conftest
 
 
 # ---------------------------------------------------------------------------

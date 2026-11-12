@@ -245,6 +245,12 @@ class RpcClient:
             self._server = SorobanServer(self._server_url)
         return self._server
 
+    async def close(self) -> None:
+        """Release the underlying SDK client's resources (if it was created)."""
+        if self._server is not None:
+            await asyncio.to_thread(self._server.close)
+            self._server = None
+
     async def get_transaction(self, transaction_hash: str) -> GetTransactionResult:
         """Fetch a transaction from the Soroban RPC and return a normalized result.
 
@@ -382,14 +388,11 @@ class RpcClient:
         diagnostic_events: list[DiagnosticEventInfo] = []
 
         if raw.fee_bump:
-            # Fee-bump transaction: inspect the inner result XDR rather than
-            # assuming the normal TransactionResult structure.
-            # The raw result_xdr is the outer result; we need the inner result.
-            inner_result_xdr = getattr(raw, "inner_result_xdr", None) or None
+            # Fee-bump transaction: the RPC only returns the outer result XDR;
+            # the decoder extracts the embedded inner result from it.
             try:
                 decoded_result = decode_fee_bump_result(
                     result_xdr=result_xdr,
-                    inner_result_xdr=inner_result_xdr,
                 )
             except (XdrDecodingError, UnsupportedXdrStructure) as exc:
                 logger.warning(
@@ -468,7 +471,7 @@ class RpcClient:
         - rpc_status: raw RPC status string
         """
         try:
-            response = self._server.get_health()
+            response = self.server.get_health()
             return {
                 "status": response.status,
                 "latest_ledger": response.latest_ledger,

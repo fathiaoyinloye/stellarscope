@@ -15,7 +15,6 @@ from typing import Any, Optional
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pydantic import field_validator
 
@@ -218,13 +217,13 @@ async def register_transaction(
     # Rate limiting per client IP
     client_id = request.client.host if request.client else "unknown"
     if not _check_rate_limit(client_id):
-        return JSONResponse(
-            status_code=429,
-            content={"detail": "Rate limit exceeded. Try again later."},
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Try again later.",
         )
     # Normalise hash to lower case (already done by validator)
-    tx_hash = request.transaction_hash
-    network = request.network
+    tx_hash = request_body.transaction_hash
+    network = request_body.network
 
     async with get_session() as session:
         # Attempt to insert; IntegrityError on unique constraint means already registered
@@ -303,12 +302,16 @@ async def get_transaction(
             detail="Transaction not registered",
         )
 
-    # Format diagnostic events if available
+    # Format diagnostic events if available.  Diagnostic events are preserved
+    # inside the raw RPC JSONB payload (there is no dedicated column).
     diagnostic_events: Optional[list[dict]] = None
-    if job.diagnostic_events_xdr:
+    raw_diagnostic_events = (job.raw_rpc_response or {}).get(
+        "diagnostic_events_xdr"
+    )
+    if raw_diagnostic_events:
         # Decode diagnostic events using the XDR decoder
         try:
-            decoded = decode_diagnostic_events(job.diagnostic_events_xdr)
+            decoded = decode_diagnostic_events(raw_diagnostic_events)
             diagnostic_events = [
                 {
                     "type": evt.type,

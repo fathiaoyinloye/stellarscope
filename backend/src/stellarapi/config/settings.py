@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # Observation deadline (minutes)
     OBSERVATION_DEADLINE_MINUTES: int = 60
 
+    # Contract discovery worker poll interval (seconds)
+    DISCOVERY_INTERVAL_SECONDS: int = 300
+
     # RPC timeout (seconds)
     RPC_TIMEOUT_SECONDS: int = 30
 
