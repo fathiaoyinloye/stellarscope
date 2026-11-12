@@ -27,7 +27,6 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from stellarapi.config.settings import settings
-from stellarapi.database.engine import engine as async_engine
 from stellarapi.rpc_client import RpcClient, RpcCommunicationError, RpcResponseError
 
 logger = logging.getLogger(__name__)
@@ -48,8 +47,8 @@ POLL_INTERVAL_SECONDS = settings.MONITORING_INTERVAL_SECONDS  # 60 by default
 
 
 async def claim_job(
-    engine,
-    rpc_client: RpcClient,
+    engine=None,
+    rpc_client: RpcClient | None = None,
     *,
     worker_id: str | None = None,
     lease_timeout_seconds: int | None = None,
@@ -80,7 +79,9 @@ async def claim_job(
     the row).
 
     Args:
-        engine: SQLAlchemy async engine (or compatible connection).
+        engine: SQLAlchemy async engine (or compatible connection).  If not
+            passed, the default global engine from ``stellarapi.config.settings``
+            is used.  This allows tests to inject their own engine.
         rpc_client: optional ``RpcClient`` instance; if not passed one is
             created using ``settings.SOROBAN_RPC_URL``.
         worker_id: identifier for the claiming worker (e.g. ``"hostname:pid"``).
@@ -106,6 +107,10 @@ async def claim_job(
         # Release the lease when done.
         await release_job(engine, job_info["job_id"])
     """
+    if engine is None:
+        from stellarapi.database.engine import engine as async_engine
+        engine = async_engine
+
     if worker_id is None:
         import os
         import uuid
@@ -119,12 +124,13 @@ async def claim_job(
     lease_expiry = datetime.now(timezone.utc) + timedelta(seconds=lease_timeout_seconds)
     next_check = datetime.now(timezone.utc) + timedelta(seconds=POLL_INTERVAL_SECONDS)
 
-    async with async_engine.begin() as conn:
+    async with engine.begin() as conn:
         try:
             # --- Attempt to claim a job ---
             # We use SELECT ... FOR UPDATE SKIP LOCKED to atomically claim an ACTIVE
-            # job whose lease has expired.  This is the standard PostgreSQL idiom for
-            # concurrent job claiming and is supported by asyncpg.
+            # job whose lease has expired and whose next_check_at has arrived.
+            # This ensures jobs are polled at the configured interval, not just when
+            # the 3-minute lease runs out.
             row = await conn.execute(
                 text(
                     """
@@ -148,6 +154,7 @@ async def claim_job(
                     FROM monitoring_jobs
                     WHERE monitoring_status = 'ACTIVE'
                       AND (locked_until IS NULL OR locked_until < now())
+                      AND next_check_at <= now()
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
                     """
@@ -227,7 +234,8 @@ async def release_job(engine, job_id) -> None:
                 text(
                     """
                     UPDATE monitoring_jobs
-                    SET locked_by = NULL
+                    SET locked_by = NULL,
+                        locked_until = NULL
                     WHERE id = :job_id
                     """
                 ),

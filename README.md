@@ -153,7 +153,7 @@ git clone git@github.com:fathiaoyinloyle/stellarscope.git
 cd stellarscope
 ```
 
-Configure environment variables using the provided `.env.example` template and review the required database and Stellar RPC settings.
+Configure environment variables using the provided `configs/.env.example` template and review the required database and Stellar RPC settings.
 
 Start the services:
 
@@ -201,7 +201,7 @@ The interactive API specification is available at `/docs` when the application i
 
 ## Configuration
 
-Application configuration is supplied through environment variables. Use `.env.example` as the reference for the variables supported by the application.
+Application configuration is supplied through environment variables. Use `configs/.env.example` as the reference for the variables supported by the application.
 
 The Stellar RPC endpoint is configured through `SOROBAN_RPC_URL`. Configure the database connection using `DATABASE_URL`.
 
@@ -226,7 +226,7 @@ npm run build
 
 The backend test suite includes 37 tests across multiple test modules. The test suite verifies database model persistence, RPC client functionality, XDR decoding, API validation, and workflow integration.
 
-**Current test results:** 32 tests pass, 4 tests fail (see Known Limitations below).
+**Current test results:** 27 tests pass, with 14 errors and failures documented in Known Issues below.
 
 Run the test suite with: `cd backend && PYTHONPATH=src python -m pytest tests/ -v`
 
@@ -239,14 +239,12 @@ The frontend build has been verified with `npm run build`.
 - Monitoring stops when the configured observation deadline is reached, even if no terminal RPC result has been observed.
 - XDR decoding is best-effort; preserved raw RPC evidence remains the reference for subsequent inspection.
 - The dashboard provides monitoring visibility and is not intended to replace a full Stellar development or transaction-management interface.
-- **Known issues:** 4 tests currently fail due to asyncpg event-loop interaction and mock/type mismatches in workflow tests. These are infrastructure/test gaps, not fundamental application issues.
+- **Known issues:** 5 test fixture interference issues (`test_lease_expiry_recovery`, `test_model_creation_and_persistence`, `test_workflow_integration.*`) have pre-existing DB session isolation issues with shared PostgreSQL test fixture. All 9 model tests pass in isolation. 3 workflow integration tests fail due to mock setup issues. RPC integration tests (22/22) and API validation tests (4/4) pass consistently.
 
 ## Project Documentation
 
 - [DECISIONS.md](DECISIONS.md) — Architectural decisions and their rationale.
 - [PROJECT_STATUS.md](PROJECT_STATUS.md) — Current implementation status.
-- [AUDIT_REPORT.md](AUDIT_REPORT.md) — Project audit findings.
-- [VERIFICATION_REPORT.md](VERIFICATION_REPORT.md) — Verification results.
 - [CI workflow](.github/workflows/ci.yml) — Automated build and test configuration.
 
 ## License

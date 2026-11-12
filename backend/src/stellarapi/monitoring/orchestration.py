@@ -15,20 +15,23 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import select
 
 from stellarapi.config.settings import settings
 from stellarapi.database.engine import engine as async_engine
 from stellarapi.database.models import MonitoringJob
-from stellarapi.rpc_client import RpcClient, RpcCommunicationError, RpcResponseError
+from stellarapi.rpc_client import RpcClient, RpcCommunicationError, RpcResponseError, GetTransactionResult
 from stellarapi.xdr.decoder import (
     decode_fee_bump_result,
     decode_transaction_result,
     decode_transaction_meta,
     decode_diagnostic_events,
 )
+from stellarapi.xdr.decoder import TransactionResultInfo, TransactionMetaInfo, DiagnosticEventInfo
 
 logger = logging.getLogger(__name__)
 
@@ -81,13 +84,14 @@ async def perform_monitoring_check(
     release the lease after this function returns.
 
     The function:
-    1. Calls ``rpc_client.get_transaction(transaction_hash)`` to get the
+    1. Fetches the current job state from the database.
+    2. Calls ``rpc_client.get_transaction(transaction_hash)`` to get the
        latest RPC response.
-    2. Normalises and decodes the response (result XDR, meta XDR, diagnostic
+    3. Normalises and decodes the response (result XDR, meta XDR, diagnostic
        events) using the best‑effort XDR decoder.
-    3. Updates the ``monitoring_jobs`` table with the new RPC status,
+    4. Updates the ``monitoring_jobs`` table with the new RPC status,
        decoded evidence, and lifecycle state.
-    4. Schedules the ``next_check_at`` based on the outcome.
+    5. Schedules the ``next_check_at`` based on the outcome.
 
     Invariants preserved
     --------------------
@@ -100,6 +104,8 @@ async def perform_monitoring_check(
       the normal top‑level ``TransactionResult`` structure.
     - Raw evidence (``raw_rpc_response``, base64 XDR fields) is always
       preserved, even when decoding fails.
+    - Observation deadline: if the job has been monitored for too long without
+      a terminal result, it transitions to ``OBSERVATION_EXPIRED``.
 
     Args:
         rpc_client: ``RpcClient`` instance connected to the appropriate RPC URL.
@@ -131,6 +137,19 @@ async def perform_monitoring_check(
         ``RpcResponseError``: if the RPC returns an unexpected response format.
         ``SQLAlchemyError``: if the database update fails.
     """
+
+    # ------------------------------------------------------------------
+    # Step 0: Fetch the current job state from the database
+    # ------------------------------------------------------------------
+    async with async_engine.begin() as conn:
+        row = await conn.execute(
+            select(MonitoringJob).where(MonitoringJob.id == job_id)
+        )
+        job = row.scalar_one()
+
+    job_created_at = job.created_at
+    job_monitoring_status = job.monitoring_status
+
     # ------------------------------------------------------------------
     # Step 1: Fetch the latest transaction from the RPC
     # ------------------------------------------------------------------
@@ -170,13 +189,18 @@ async def perform_monitoring_check(
 
     if fee_bump:
         # Fee-bump: inspect inner result XDR rather than assuming normal structure.
-        inner_result_xdr = rpc_result.raw_rpc_response.get("inner_result_xdr") or None
-        # The raw RPC response from Soroban may embed the inner result XDR;
-        # if not available we fall back to the outer result_xdr.
+        # Prefer the fresh inner_result_xdr from the RPC response over the stored
+        # result_xdr.  The raw RPC response from Soroban may embed the inner result
+        # XDR; if not available we fall back to the outer result_xdr.
+        inner_result_xdr = (
+            new_raw_rpc_response.get("inner_result_xdr")
+            or rpc_result.raw_rpc_response.get("inner_result_xdr")
+            or None
+        )
         try:
             decoded_result = decode_fee_bump_result(
-                result_xdr=result_xdr or rpc_result.result_xdr or "",
-                inner_result_xdr=inner_result_xdr or rpc_result.result_xdr or "",
+                result_xdr=rpc_result.result_xdr or result_xdr or "",
+                inner_result_xdr=inner_result_xdr or None,
             )
         except (Exception) as exc:
             logger.warning(
@@ -188,11 +212,12 @@ async def perform_monitoring_check(
             # Keep decoded_result as None; raw XDR is preserved for evidence.
     else:
         # Normal (non fee-bump) transaction: decode the outer result XDR.
-        if result_xdr or rpc_result.result_xdr:
+        # Prefer the fresh result_xdr from the RPC response over the stored
+        # result_xdr, to avoid "old evidence wins over new".
+        result_xdr_to_decode = rpc_result.result_xdr or result_xdr or ""
+        if result_xdr_to_decode:
             try:
-                decoded_result = decode_transaction_result(
-                    result_xdr or rpc_result.result_xdr or ""
-                )
+                decoded_result = decode_transaction_result(result_xdr_to_decode)
             except (Exception) as exc:
                 logger.warning(
                     "XDR decode failure for result_xdr of transaction %s (job %s): %s",
@@ -204,12 +229,12 @@ async def perform_monitoring_check(
                 # in ``new_raw_rpc_response`` for evidence.
 
     # Decode result_meta XDR if present
+    # Prefer the fresh rpc_result.result_meta_xdr over the stored result_meta_xdr
+    meta_xdr_to_decode = rpc_result.result_meta_xdr or result_meta_xdr or ""
     decoded_meta: Optional[Any] = None
-    if result_meta_xdr or rpc_result.result_meta_xdr:
+    if meta_xdr_to_decode:
         try:
-            decoded_meta = decode_transaction_meta(
-                result_meta_xdr or rpc_result.result_meta_xdr or ""
-            )
+            decoded_meta = decode_transaction_meta(meta_xdr_to_decode)
         except (Exception) as exc:
             logger.warning(
                 "XDR decode failure for result_meta_xdr of transaction %s (job %s): %s",
@@ -219,6 +244,7 @@ async def perform_monitoring_check(
             )
 
     # Decode diagnostic events XDR if present
+    # Use the RPC result's diagnostic_events_xdr directly
     decoded_events: list[Any] = []
     if rpc_result.diagnostic_events_xdr:
         try:
@@ -240,12 +266,36 @@ async def perform_monitoring_check(
     #   response; do not attempt to decode result fields.
     # - Do NOT overwrite a previously recorded terminal result (COMPLETED) with
     #   a later NOT_FOUND.
+    # - OBSERVATION_EXPIRED: if the observation deadline has been reached
+    #   without a terminal result, transition to OBSERVATION_EXPIRED.
 
-    # Determine the new monitoring_status and rpc_status based on the RPC result
-    # and the current job state.  The caller should ensure we only transition
-    # from ACTIVE; transitions from COMPLETED/OBSERVATION_EXPIRED are errors.
+    # Check observation deadline: if the job has been monitored for too long
+    # without a terminal result, transition to OBSERVATION_EXPIRED.
+    observation_deadline_seconds = getattr(
+        settings, "OBSERVATION_DEADLINE_MINUTES", 60
+    ) * 60
 
-    if status.value == "NOT_FOUND":
+    # Determine if observation deadline has been reached.
+    # We use the job's created_at as the start of monitoring.
+    # If the job was created more than the deadline ago and is still ACTIVE
+    # with a non-terminal rpc_status, expire it.
+    deadline_passed = False
+    if job_created_at is not None and isinstance(job_created_at, datetime):
+        deadline_time = job_created_at + timedelta(
+            seconds=observation_deadline_seconds
+        )
+        if datetime.now(timezone.utc) >= deadline_time:
+            # Check that we're not already in a terminal state
+            if job_monitoring_status not in ("COMPLETED", "OBSERVATION_EXPIRED"):
+                deadline_passed = True
+
+    if deadline_passed:
+        # Transition to OBSERVATION_EXPIRED regardless of RPC result
+        new_rpc_status = status
+        new_monitoring_status = "OBSERVATION_EXPIRED"
+        new_failure_reason = None
+        new_next_check = None  # No further polling needed
+    elif status.value == "NOT_FOUND":
         # NOT_FOUND: do not decode result fields; preserve raw response.
         # If the job is currently ACTIVE, transition to... we keep it ACTIVE
         # but record the NOT_FOUND.  Per the spec, NOT_FOUND is not an error
@@ -314,7 +364,7 @@ async def perform_monitoring_check(
                     "monitoring_status": new_monitoring_status,
                     "raw_rpc_response": json.dumps(new_raw_rpc_response),
                     "envelope_xdr": envelope_xdr or rpc_result.envelope_xdr,
-                    "result_xdr": result_xdr or rpc_result.result_xdr,
+                    "result_xdr": rpc_result.result_xdr or result_xdr,
                     "result_meta_xdr": result_meta_xdr or rpc_result.result_meta_xdr,
                     "ledger": ledger if ledger is not None else rpc_result.ledger,
                     "failure_reason": new_failure_reason,

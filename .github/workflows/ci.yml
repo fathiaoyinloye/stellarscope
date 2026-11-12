@@ -19,11 +19,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
         ports:
           - "5432:5432"
-        options: >-
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        shm_size: 1gb
+        options: --shm-size 1gb
 
     env:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/stellarscope
@@ -47,6 +43,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -e ".[dev]"
+          pip install -r requirements.txt
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -78,7 +75,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results
-          path: .
+          path: backend/tests
 
       - name: Build frontend production assets
         run: |

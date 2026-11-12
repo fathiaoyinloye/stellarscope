@@ -110,11 +110,17 @@ async def run_worker(
 
     while not _shutdown_requested:
         # --- Step 1: Claim a job ---
-        job_info = await claim_job(
-            async_engine,
-            rpc_client,
-            worker_id=f"worker-{asyncio.current_task().get_name() or 'unknown'}",
-        )
+        try:
+            job_info = await claim_job(
+                async_engine,
+                rpc_client,
+                worker_id=f"worker-{asyncio.current_task().get_name() or 'unknown'}",
+            )
+        except SQLAlchemyError as exc:
+            logger.error("Database error while claiming job: %s", exc, exc_info=True)
+            # Wait before retrying to avoid a tight error loop.
+            await asyncio.sleep(settings.MONITORING_INTERVAL_SECONDS)
+            continue
 
         if job_info is None:
             # No job available — wait before the next scan cycle.
@@ -173,7 +179,10 @@ async def run_worker(
         # The DB row's locked_by is set to NULL; monitoring_status
         # remains ACTIVE (or was transitioned to COMPLETED by the
         # orchestration service).
-        await release_job(async_engine, job_info["job_id"])
+        try:
+            await release_job(async_engine, job_info["job_id"])
+        except SQLAlchemyError as exc:
+            logger.error("Database error while releasing job id=%s: %s", job_info["job_id"], exc, exc_info=True)
         logger.debug("Lease released for job id=%s", job_info["job_id"])
 
     # --- Graceful shutdown ---

@@ -6,7 +6,7 @@ Thank you for considering contributing to StellarScope! This project provides tr
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/your-org/stellarscope.git
+   git clone git@github.com:fathiaoyinloyle/stellarscope.git
    cd stellarscope
    ```
 

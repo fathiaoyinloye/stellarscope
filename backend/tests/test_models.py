@@ -9,6 +9,7 @@ These tests use a real PostgreSQL connection and verify:
 - Indexes and constraints
 - Migration execution
 """
+TEST_DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/stellarscope"
 import pytest
 import sqlalchemy
 

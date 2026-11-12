@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+from time import monotonic
 from typing import Any, Optional
+from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pydantic import field_validator
 
@@ -25,6 +28,31 @@ from stellarapi.database.session import get_session
 from stellarapi.database.models import MonitoringJob
 from stellarapi.rpc_client import RpcClient, RpcCommunicationError, RpcResponseError
 from stellarapi.xdr.decoder import decode_diagnostic_events
+
+# Simple in-memory rate limiter: 20 registrations per IP per 60 seconds
+_client_requests: defaultdict[str, list[float]] = defaultdict(list)
+_rate_limit_config = {"limit": 20, "window_seconds": 60}
+
+
+def _check_rate_limit(client_id: str) -> bool:
+    """Check if a request is allowed based on the rate limit config.
+
+    Returns True if the request is allowed, False if the limit has been exceeded.
+    """
+    now = monotonic()
+    window = _rate_limit_config["window_seconds"]
+    limit = _rate_limit_config["limit"]
+
+    # Remove timestamps outside the window
+    _client_requests[client_id] = [
+        ts for ts in _client_requests[client_id] if now - ts < window
+    ]
+
+    if len(_client_requests[client_id]) >= limit:
+        return False
+
+    _client_requests[client_id].append(now)
+    return True
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["transactions"])
 
@@ -166,23 +194,34 @@ def _format_datetime(dt: Any) -> Any:
     "/register",
     response_model=TransactionRegisterResponse,
     status_code=status.HTTP_201_CREATED,
-    responses={409: {"description": "Transaction already registered"}, 422: {"description": "Validation error"}},
+    responses={409: {"description": "Transaction already registered"}, 422: {"description": "Validation error"}, 429: {"description": "Rate limit exceeded"}},
 )
 async def register_transaction(
-    request: TransactionRegisterRequest,
+    request: Request,
+    request_body: TransactionRegisterRequest,
 ) -> TransactionRegisterResponse:
     """Register a transaction hash for monitoring.
 
+    Includes rate limiting per client IP to prevent abuse.
     Does not synchronously poll Stellar RPC. The transaction is persisted
     with ``monitoring_status = 'ACTIVE'`` and ``rpc_status = 'pending'``,
     and will be picked up by the background worker on the next cycle.
 
     Args:
-        request: Registration request with transaction hash and network.
+        request: FastAPI request object, used for rate limiting.
+        request_body: Registration request with transaction hash and network.
 
     Raises:
-        HTTPException: 409 if already registered, 422 if validation fails.
+        HTTPException: 409 if already registered, 422 if validation fails,
+            429 if rate limit exceeded.
     """
+    # Rate limiting per client IP
+    client_id = request.client.host if request.client else "unknown"
+    if not _check_rate_limit(client_id):
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded. Try again later."},
+        )
     # Normalise hash to lower case (already done by validator)
     tx_hash = request.transaction_hash
     network = request.network

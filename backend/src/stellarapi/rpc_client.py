@@ -20,6 +20,7 @@ Key design points
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
@@ -269,10 +270,10 @@ class RpcClient:
             raise ValueError(msg)
 
         try:
-            # ``SorobanServer`` is the synchronous stellar-sdk client; calling
-            # it returns the response directly (it is not awaitable).
-            raw: stellar_sdk.soroban_rpc.GetTransactionResponse = (
-                self.server.get_transaction(transaction_hash)
+            # Run the synchronous SorobanServer.get_transaction in a thread
+            # to avoid blocking the async event loop.
+            raw = await asyncio.to_thread(
+                self.server.get_transaction, transaction_hash
             )
         except (
             ConnectionError,

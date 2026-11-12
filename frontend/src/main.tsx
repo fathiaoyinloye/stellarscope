@@ -2,7 +2,6 @@ import React, {useEffect, useState} from 'react'
 import axios from 'axios'
 import { createRoot } from 'react-dom/client'
 import App from './App'
-
 interface Transaction {
   id: string
   transaction_hash: string
@@ -16,14 +15,6 @@ interface Transaction {
   is_active: boolean
 }
 
-interface TransactionsResponse {
-  items: Transaction[]
-  total: number
-  page: number
-  per_page: number
-  total_pages: number
-}
-
 export default function TransactionListComponent() {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loading, setLoading] = useState(true)
@@ -33,25 +24,23 @@ export default function TransactionListComponent() {
   const [totalPages, setTotalPages] = useState(0)
 
   useEffect(() => {
-    fetchTransactions()
-  }, [page])
-
-  const fetchTransactions = async () => {
-    setLoading(true)
-    try {
-      const response = await axios.get(`/api/v1/transactions/`, {
-        params: {page, per_page: perPage},
-        withCredentials: true,
-      })
-      setTransactions(response.data.items)
-      setTotal(response.data.total)
-      setTotalPages(response.data.total_pages)
-    } catch (error) {
-      console.error('Failed to fetch transactions:', error)
-    } finally {
-      setLoading(false)
+    async function fetchData() {
+      try {
+        const response = await axios.get(`/api/v1/transactions/`, {
+          params: {page, per_page: perPage},
+          withCredentials: true,
+        })
+        setTransactions(response.data.items)
+        setTotal(response.data.total)
+        setTotalPages(response.data.total_pages)
+      } catch (error) {
+        console.error('Failed to fetch transactions:', error)
+      } finally {
+        setLoading(false)
+      }
     }
-  }
+    fetchData()
+  }, [page, perPage])
 
   if (loading) {
     return <div>Loading transactions...</div>
