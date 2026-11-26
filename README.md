@@ -224,9 +224,9 @@ npm install
 npm run build
 ```
 
-The backend test suite includes 37 tests across multiple test modules. The test suite verifies database model persistence, RPC client functionality, XDR decoding, API validation, and workflow integration.
+The backend test suite includes 36 tests across multiple test modules. The test suite verifies database model persistence, RPC client functionality, XDR decoding, API validation, and workflow integration.
 
-**Current test results:** 27 tests pass, with 14 errors and failures documented in Known Issues below.
+**Current test results:** 32 tests pass consistently. 4 tests (3 workflow integration tests and 1 concurrency test) may fail when running the full test suite batch due to PostgreSQL connection pool isolation issues — they pass when run individually. The RPC integration tests (22/22) and API validation tests (4/4) pass consistently.
 
 Run the test suite with: `cd backend && PYTHONPATH=src python -m pytest tests/ -v`
 

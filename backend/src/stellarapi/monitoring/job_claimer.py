@@ -107,6 +107,8 @@ async def claim_job(
         # Release the lease when done.
         await release_job(engine, job_info["job_id"])
     """
+    # Use passed engine or fall back to the default global engine.
+    # This allows tests (or other callers) to inject their own engine.
     if engine is None:
         from stellarapi.database.engine import engine as async_engine
         engine = async_engine

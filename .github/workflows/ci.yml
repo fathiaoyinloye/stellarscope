@@ -19,7 +19,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
         ports:
           - "5432:5432"
-        options: --shm-size=1gb
+        options: --shm-size=1g
 
     env:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/stellarscope

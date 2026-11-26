@@ -84,6 +84,16 @@ async def test_lease_expiry_recovery() -> None:
     # Wait for the lease to expire
     await asyncio.sleep(2)  # Wait just over 1 second
 
+    # Reset next_check_at so the job can be claimed again after lease expiry
+    from sqlalchemy import text
+    async with async_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE monitoring_jobs SET next_check_at = now() WHERE id = :job_id"
+            ),
+            {"job_id": claimed["job_id"]},
+        )
+
     # Now another worker should be able to claim it
     newly_claimed = await claim_job(async_engine, RpcClient(), lease_timeout_seconds=1)
     assert newly_claimed is not None, "After lease expiry, another worker should be able to claim"

@@ -22,7 +22,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import select
 
 from stellarapi.config.settings import settings
-from stellarapi.database.engine import engine as async_engine
+from stellarapi.database.engine import engine as async_engine, async_sessionmaker
 from stellarapi.database.models import MonitoringJob
 from stellarapi.rpc_client import RpcClient, RpcCommunicationError, RpcResponseError, GetTransactionResult
 from stellarapi.xdr.decoder import (
@@ -32,6 +32,7 @@ from stellarapi.xdr.decoder import (
     decode_diagnostic_events,
 )
 from stellarapi.xdr.decoder import TransactionResultInfo, TransactionMetaInfo, DiagnosticEventInfo
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -144,11 +145,12 @@ async def perform_monitoring_check(
     # ------------------------------------------------------------------
     # Step 0: Fetch the current job state from the database
     # ------------------------------------------------------------------
-    async with async_engine.begin() as conn:
-        row = await conn.execute(
+    async_session = async_sessionmaker(bind=async_engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_session() as session:
+        result = await session.execute(
             select(MonitoringJob).where(MonitoringJob.id == job_id)
         )
-        job = row.scalar_one()
+        job = result.scalar_one()
 
     job_created_at = job.created_at
     job_monitoring_status = job.monitoring_status
